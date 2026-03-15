@@ -1,0 +1,657 @@
+{
+  "cache_time": "2026-03-15T13:27:31.334692",
+  "stocks": [
+    {
+      "code": "000006",
+      "name": "深振业Ａ",
+      "current_price": 9.03,
+      "change_pct": -0.6600660066006655,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/02/25",
+          "price": 9.68,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/02/25",
+        "price": 9.68,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000008",
+      "name": "神州高铁",
+      "current_price": 2.99,
+      "change_pct": 2.7491408934707926,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/13",
+          "price": 2.99,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/13",
+        "price": 2.99,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000009",
+      "name": "中国宝安",
+      "current_price": 9.47,
+      "change_pct": 3.04678998911862,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/13",
+          "price": 9.47,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/13",
+        "price": 9.47,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000014",
+      "name": "沙河股份",
+      "current_price": 14.35,
+      "change_pct": -1.3745704467354025,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/12",
+          "price": 14.55,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/12",
+        "price": 14.55,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000019",
+      "name": "深粮控股",
+      "current_price": 7.59,
+      "change_pct": 1.1999999999999982,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/09",
+          "price": 7.58,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/09",
+        "price": 7.58,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000020",
+      "name": "深华发Ａ",
+      "current_price": 14.49,
+      "change_pct": 0.0,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/04",
+          "price": 13.88,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/04",
+        "price": 13.88,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000026",
+      "name": "飞亚达",
+      "current_price": 15.1,
+      "change_pct": -1.9480519480519525,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/04",
+          "price": 14.82,
+          "period": "日线"
+        },
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/02/26",
+          "price": 15.87,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/04",
+        "price": 14.82,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000027",
+      "name": "深圳能源",
+      "current_price": 7.26,
+      "change_pct": -2.156334231805932,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/12",
+          "price": 7.42,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/12",
+        "price": 7.42,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000028",
+      "name": "国药一致",
+      "current_price": 25.96,
+      "change_pct": 0.3866976024748702,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/06",
+          "price": 25.55,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/06",
+        "price": 25.55,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000030",
+      "name": "富奥股份",
+      "current_price": 5.36,
+      "change_pct": 0.1869158878504799,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/02/25",
+          "price": 5.58,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/02/25",
+        "price": 5.58,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000045",
+      "name": "深纺织Ａ",
+      "current_price": 12.96,
+      "change_pct": -1.369863013698628,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/04",
+          "price": 12.0,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/04",
+        "price": 12.0,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000050",
+      "name": "深天马Ａ",
+      "current_price": 9.39,
+      "change_pct": -1.6753926701570694,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/09",
+          "price": 9.23,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/09",
+        "price": 9.23,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000058",
+      "name": "深赛格",
+      "current_price": 8.49,
+      "change_pct": -0.3521126760563305,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/02/25",
+          "price": 9.27,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/02/25",
+        "price": 9.27,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000063",
+      "name": "中兴通讯",
+      "current_price": 36.46,
+      "change_pct": -1.7780172413793014,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/02/27",
+          "price": 38.65,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/02/27",
+        "price": 38.65,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000066",
+      "name": "中国长城",
+      "current_price": 16.41,
+      "change_pct": -4.091174751607244,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/04",
+          "price": 15.18,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/04",
+        "price": 15.18,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000088",
+      "name": "盐田港",
+      "current_price": 4.63,
+      "change_pct": -0.64377682403434,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/02",
+          "price": 4.68,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/02",
+        "price": 4.68,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000090",
+      "name": "天健集团",
+      "current_price": 3.99,
+      "change_pct": 0.0,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/13",
+          "price": 3.99,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/13",
+        "price": 3.99,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000096",
+      "name": "广聚能源",
+      "current_price": 11.04,
+      "change_pct": -1.2522361359570713,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/11",
+          "price": 11.25,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/11",
+        "price": 11.25,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000099",
+      "name": "中信海直",
+      "current_price": 20.2,
+      "change_pct": -0.8832188420019614,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/06",
+          "price": 21.51,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/06",
+        "price": 21.51,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000151",
+      "name": "中成股份",
+      "current_price": 12.99,
+      "change_pct": -0.6880733944954117,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/04",
+          "price": 12.67,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/04",
+        "price": 12.67,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000153",
+      "name": "丰原药业",
+      "current_price": 6.67,
+      "change_pct": 0.0,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/10",
+          "price": 6.76,
+          "period": "日线"
+        },
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/02/26",
+          "price": 6.73,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/10",
+        "price": 6.76,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000156",
+      "name": "华数传媒",
+      "current_price": 7.98,
+      "change_pct": -2.0858895705521463,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/04",
+          "price": 7.74,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/04",
+        "price": 7.74,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000401",
+      "name": "金隅冀东",
+      "current_price": 5.16,
+      "change_pct": 1.3752455795677856,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/13",
+          "price": 5.16,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/13",
+        "price": 5.16,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000419",
+      "name": "通程控股",
+      "current_price": 6.22,
+      "change_pct": -0.4800000000000039,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/04",
+          "price": 6.06,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/04",
+        "price": 6.06,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000420",
+      "name": "吉林化纤",
+      "current_price": 4.82,
+      "change_pct": -3.9840637450199066,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/04",
+          "price": 4.28,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/04",
+        "price": 4.28,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000421",
+      "name": "南京公用",
+      "current_price": 7.01,
+      "change_pct": -0.42613636363636714,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/06",
+          "price": 7.03,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/06",
+        "price": 7.03,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000501",
+      "name": "武商集团",
+      "current_price": 8.99,
+      "change_pct": -0.772626931567332,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/09",
+          "price": 9.02,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/09",
+        "price": 9.02,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000519",
+      "name": "中兵红箭",
+      "current_price": 18.28,
+      "change_pct": -3.6373220875065773,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/13",
+          "price": 18.28,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/13",
+        "price": 18.28,
+        "period": "日线"
+      }
+    },
+    {
+      "code": "000520",
+      "name": "凤凰航运",
+      "current_price": 4.44,
+      "change_pct": -0.6711409395973011,
+      "signals": [
+        {
+          "type": "2s",
+          "direction": "卖出",
+          "date": "2026/03/03",
+          "price": 5.12,
+          "period": "日线"
+        }
+      ],
+      "latest_signal": {
+        "type": "2s",
+        "direction": "卖出",
+        "date": "2026/03/03",
+        "price": 5.12,
+        "period": "日线"
+      }
+    }
+  ]
+}

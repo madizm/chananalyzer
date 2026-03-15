@@ -1,0 +1,45 @@
+# 缠论分析系统 - Python 依赖
+
+# Web 框架
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# 数据库
+sqlalchemy>=2.0.0
+alembic>=1.12.0
+
+# 数据验证
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# 数据源 (现有)
+tushare>=1.2.60
+akshare>=1.11.0
+pandas>=2.0.0,<3.0.0  # pandas 3.0+ 移除了 fillna(method=...) 参数，tushare 暂未适配
+numpy>=1.24.0
+
+# 任务队列 (可选)
+celery>=5.3.0
+redis>=5.0.0
+
+# HTTP 客户端
+httpx>=0.25.0
+requests>=2.31.0
+
+# AI API 客户端（兼容 OpenAI 格式的 API）
+openai>=1.0.0
+pyyaml>=6.0.0  # YAML配置文件解析
+
+# 环境变量
+python-dotenv>=1.0.0
+
+# 开发工具
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.11.0
+tqdm>=4.65.0  # 进度条
+
+# GUI 可视化
+matplotlib>=3.7.0
+PyQt6>=6.6.0
