@@ -18,6 +18,14 @@ const typewriterIntervals = {
 // ============ 打字机效果 ============
 
 /**
+ * 检查页面是否可见
+ */
+function isPageVisible() {
+    // Page Visibility API 检测页面是否在当前可见标签页
+    return !document.hidden;
+}
+
+/**
  * 打字机效果 - 逐字符显示文本
  * @param {string} elementId - 目标元素ID
  * @param {string} text - 要显示的文本
@@ -43,10 +51,24 @@ function typewriterEffect(elementId, text, speed = 30, storageKey = '') {
     // 标记有内容
     el.dataset.hasContent = 'true';
 
+    // 如果页面不可见（后台标签页），直接显示完整文本，跳过打字机效果
+    if (!isPageVisible()) {
+        el.textContent = text;
+        applyHighlighting(el);
+        return;
+    }
+
     let index = 0;
     el.textContent = '';
 
     function type() {
+        // 如果页面变成不可见，立即显示剩余文本
+        if (!isPageVisible()) {
+            el.textContent = text;
+            applyHighlighting(el);
+            return;
+        }
+
         if (index < text.length) {
             // 每次显示1-2个中文字符，让效果更流畅
             const charsPerStep = /[\u4e00-\u9fa5]/.test(text[index]) ? 2 : 3;
