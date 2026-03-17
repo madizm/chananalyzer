@@ -43,6 +43,7 @@ htmlcov/
 
 # 用户会话数据（运行时生成）
 web/users/
+web/cache/
 
 # 其他
 .DS_Store
