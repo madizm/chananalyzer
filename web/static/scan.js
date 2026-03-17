@@ -214,13 +214,14 @@ function renderResultsTable(direction, stocks) {
         const typeLabel = BS_TYPE_LABELS[signal.type] || signal.type;
         const typeClass = direction === 'buy' ? 'buy' : 'sell';
 
+        // 使用data-label属性，便于移动端卡片式显示
         tr.innerHTML = `
-            <td class="code">${stock.code}</td>
-            <td>${stock.name || ''}</td>
-            <td>${stock.current_price ? stock.current_price.toFixed(2) : '--'}</td>
-            <td><span class="bs-type ${typeClass}">${typeLabel}</span></td>
-            <td>${signal.date}</td>
-            <td>${signal.price ? signal.price.toFixed(2) : '--'}</td>
+            <td class="code" data-label="股票代码">${stock.code}</td>
+            <td data-label="股票名称">${stock.name || ''}</td>
+            <td data-label="当前价格">${stock.current_price ? stock.current_price.toFixed(2) : '--'}</td>
+            <td data-label="买点类型"><span class="bs-type ${typeClass}">${typeLabel}</span></td>
+            <td data-label="信号日期">${signal.date}</td>
+            <td data-label="信号价格">${signal.price ? signal.price.toFixed(2) : '--'}</td>
         `;
 
         tbody.appendChild(tr);
@@ -380,7 +381,7 @@ async function initBuyScanPage() {
         if (scanState.buy.scanning) return;
 
         // 获取选中的买点类型
-        const checkboxes = document.querySelectorAll('#buy-scan .checkbox-item input:checked');
+        const checkboxes = document.querySelectorAll('#buyTypesGroup input:checked');
         const types = Array.from(checkboxes).map(cb => cb.value);
 
         if (types.length === 0) {
@@ -440,7 +441,7 @@ async function initSellScanPage() {
         if (scanState.sell.scanning) return;
 
         // 获取选中的卖点类型
-        const checkboxes = document.querySelectorAll('#sell-scan .checkbox-item input:checked');
+        const checkboxes = document.querySelectorAll('#sellTypesGroup input:checked');
         const types = Array.from(checkboxes).map(cb => cb.value);
 
         if (types.length === 0) {
