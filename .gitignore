@@ -19,6 +19,7 @@ cos_config.yaml
 venv/
 env/
 ENV/
+.venv
 
 # Claude Code 配置
 .claude/
