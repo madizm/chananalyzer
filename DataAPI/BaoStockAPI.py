@@ -69,13 +69,14 @@ class CBaoStock(CCommonStockApi):
         else:
             fields = "date,open,high,low,close,volume,amount,turn"
         autype_dict = {AUTYPE.QFQ: "2", AUTYPE.HFQ: "1", AUTYPE.NONE: "3"}
+        adjustflag = autype_dict.get(self.autype, autype_dict[AUTYPE.QFQ])
         rs = bs.query_history_k_data_plus(
             code=self.code,
             fields=fields,
             start_date=self.begin_date,
             end_date=self.end_date,
             frequency=self.__convert_type(),
-            adjustflag=autype_dict[self.autype],
+            adjustflag=adjustflag,
         )
         if rs.error_code != '0':
             raise Exception(rs.error_msg)
