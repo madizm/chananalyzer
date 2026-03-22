@@ -1,6 +1,27 @@
 (function () {
   const state = {
     feedback: new Map(),
+    payloads: {
+      buy: null,
+      sell: null,
+    },
+    filters: {
+      signalDateFrom: "",
+      signalDateTo: "",
+      amountMin: null,
+      amountMax: null,
+      turnoverMin: null,
+      turnoverMax: null,
+    },
+  };
+
+  const FILTER_INPUTS = {
+    signalDateFrom: "filter-signal-date-from",
+    signalDateTo: "filter-signal-date-to",
+    amountMin: "filter-amount-min",
+    amountMax: "filter-amount-max",
+    turnoverMin: "filter-turnover-min",
+    turnoverMax: "filter-turnover-max",
   };
 
   async function fetchJson(path) {
@@ -31,6 +52,69 @@
     return typeof value === "number" ? `${value.toFixed(2)}%` : "--";
   }
 
+  function parseNumberInput(value) {
+    if (value === "") {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function parseSignalDate(value) {
+    if (!value || typeof value !== "string") {
+      return null;
+    }
+    const normalized = value.replace(/\//g, "-");
+    const timestamp = Date.parse(`${normalized}T00:00:00`);
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  function filterStocks(stocks) {
+    return (stocks || []).filter((stock) => {
+      const signalDate = parseSignalDate(stock.latest_signal && stock.latest_signal.date);
+
+      if (state.filters.signalDateFrom) {
+        const fromTs = parseSignalDate(state.filters.signalDateFrom);
+        if (signalDate === null || fromTs === null || signalDate < fromTs) {
+          return false;
+        }
+      }
+
+      if (state.filters.signalDateTo) {
+        const toTs = parseSignalDate(state.filters.signalDateTo);
+        if (signalDate === null || toTs === null || signalDate > toTs) {
+          return false;
+        }
+      }
+
+      if (state.filters.amountMin !== null) {
+        if (typeof stock.amount !== "number" || stock.amount < state.filters.amountMin) {
+          return false;
+        }
+      }
+
+      if (state.filters.amountMax !== null) {
+        if (typeof stock.amount !== "number" || stock.amount > state.filters.amountMax) {
+          return false;
+        }
+      }
+
+      if (state.filters.turnoverMin !== null) {
+        if (typeof stock.turnover_rate !== "number" || stock.turnover_rate < state.filters.turnoverMin) {
+          return false;
+        }
+      }
+
+      if (state.filters.turnoverMax !== null) {
+        if (typeof stock.turnover_rate !== "number" || stock.turnover_rate > state.filters.turnoverMax) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }
+
   function renderFeedbackCell(code) {
     const item = state.feedback.get(code) || {
       up_count: 0,
@@ -50,14 +134,14 @@
     `;
   }
 
-  function renderTable(tableBodyId, payload, countId, cacheTimeId) {
+  function renderTable(tableBodyId, payload, countId, cacheTimeId, emptyText) {
     const tbody = document.getElementById(tableBodyId);
-    const stocks = payload.stocks || [];
+    const stocks = filterStocks(payload.stocks || []);
     document.getElementById(countId).textContent = stocks.length;
     document.getElementById(cacheTimeId).textContent = `更新时间 ${formatDate(payload.cache_time)}，每日更新一次`;
 
     if (!stocks.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="empty">暂无结果</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="9" class="empty">${emptyText}</td></tr>`;
       return;
     }
 
@@ -77,6 +161,43 @@
         </tr>
       `;
     }).join("");
+  }
+
+  function renderTables() {
+    if (state.payloads.buy) {
+      renderTable("buy-table-body", state.payloads.buy, "buy-count", "buy-cache-time", "筛选后暂无买点结果");
+    }
+    if (state.payloads.sell) {
+      renderTable("sell-table-body", state.payloads.sell, "sell-count", "sell-cache-time", "筛选后暂无卖点结果");
+    }
+  }
+
+  function syncFiltersFromInputs() {
+    state.filters.signalDateFrom = document.getElementById(FILTER_INPUTS.signalDateFrom).value;
+    state.filters.signalDateTo = document.getElementById(FILTER_INPUTS.signalDateTo).value;
+    state.filters.amountMin = parseNumberInput(document.getElementById(FILTER_INPUTS.amountMin).value);
+    state.filters.amountMax = parseNumberInput(document.getElementById(FILTER_INPUTS.amountMax).value);
+    state.filters.turnoverMin = parseNumberInput(document.getElementById(FILTER_INPUTS.turnoverMin).value);
+    state.filters.turnoverMax = parseNumberInput(document.getElementById(FILTER_INPUTS.turnoverMax).value);
+  }
+
+  function resetFilters() {
+    Object.values(FILTER_INPUTS).forEach((id) => {
+      document.getElementById(id).value = "";
+    });
+    syncFiltersFromInputs();
+    renderTables();
+  }
+
+  function bindFilterEvents() {
+    Object.values(FILTER_INPUTS).forEach((id) => {
+      document.getElementById(id).addEventListener("input", () => {
+        syncFiltersFromInputs();
+        renderTables();
+      });
+    });
+
+    document.getElementById("filter-reset").addEventListener("click", resetFilters);
   }
 
   function bindVoteEvents() {
@@ -109,6 +230,7 @@
   }
 
   async function init() {
+    bindFilterEvents();
     bindVoteEvents();
 
     try {
@@ -132,8 +254,10 @@
         state.feedback = new Map();
       }
 
-      renderTable("buy-table-body", buyPayload, "buy-count", "buy-cache-time");
-      renderTable("sell-table-body", sellPayload, "sell-count", "sell-cache-time");
+      state.payloads.buy = buyPayload;
+      state.payloads.sell = sellPayload;
+      syncFiltersFromInputs();
+      renderTables();
     } catch (error) {
       document.getElementById("buy-table-body").innerHTML = `<tr><td colspan="9" class="empty">${error.message}</td></tr>`;
       document.getElementById("sell-table-body").innerHTML = `<tr><td colspan="9" class="empty">${error.message}</td></tr>`;

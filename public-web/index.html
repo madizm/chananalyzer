@@ -26,6 +26,42 @@
       </div>
     </header>
 
+    <section class="panel filter-panel">
+      <div class="panel-header filter-header">
+        <div>
+          <h2>前端过滤</h2>
+          <p class="panel-meta">信号日期按区间过滤，成交额单位为亿元，换手率单位为 %。</p>
+        </div>
+        <button id="filter-reset" class="secondary-btn" type="button">重置</button>
+      </div>
+      <div class="filter-grid">
+        <label class="filter-field">
+          <span>信号日期开始</span>
+          <input id="filter-signal-date-from" type="date">
+        </label>
+        <label class="filter-field">
+          <span>信号日期结束</span>
+          <input id="filter-signal-date-to" type="date">
+        </label>
+        <label class="filter-field">
+          <span>成交额最小（亿元）</span>
+          <input id="filter-amount-min" type="number" min="0" step="0.01" placeholder="例如 1.50">
+        </label>
+        <label class="filter-field">
+          <span>成交额最大（亿元）</span>
+          <input id="filter-amount-max" type="number" min="0" step="0.01" placeholder="例如 20.00">
+        </label>
+        <label class="filter-field">
+          <span>换手率最小（%）</span>
+          <input id="filter-turnover-min" type="number" min="0" step="0.01" placeholder="例如 2.00">
+        </label>
+        <label class="filter-field">
+          <span>换手率最大（%）</span>
+          <input id="filter-turnover-max" type="number" min="0" step="0.01" placeholder="例如 10.00">
+        </label>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="panel-header">
         <div>

@@ -80,11 +80,69 @@ h1, h2 {
   padding: 16px 18px 18px;
 }
 
+.filter-panel {
+  padding-top: 18px;
+}
+
 .panel-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+}
+
+.filter-header {
+  gap: 16px;
+  align-items: start;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 16px;
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.filter-field span {
+  color: var(--ink);
+}
+
+.filter-field input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  font: inherit;
+}
+
+.filter-field input:focus {
+  outline: 2px solid rgba(15, 118, 110, 0.18);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.secondary-btn {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 9px 16px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.secondary-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .table-wrap {
@@ -159,6 +217,14 @@ thead th {
   .hero {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .filter-header {
+    flex-direction: column;
+  }
+
+  .filter-grid {
+    grid-template-columns: 1fr;
   }
 
   .meta-card {
