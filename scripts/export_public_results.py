@@ -135,12 +135,13 @@ def scan_and_format(
         sell_types=[],
         verbose=False,
     )
-    sell_results = scan_stocks_cache.scan_stocks(
-        stock_codes=stock_codes,
-        buy_types=[],
-        sell_types=list(sell_types),
-        verbose=False,
-    )
+    # sell_results = scan_stocks_cache.scan_stocks(
+    #     stock_codes=stock_codes,
+    #     buy_types=[],
+    #     sell_types=list(sell_types),
+    #     verbose=False,
+    # )
+    sell_results = []
 
     codes = sorted(
         {
