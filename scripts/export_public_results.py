@@ -120,6 +120,31 @@ def export_payloads(
     write_json(output_dir / "manifest.json", build_manifest(buy_payload, sell_payload, version=version))
 
 
+def filter_stock_codes_by_trade_metrics(
+    stock_codes: Iterable[str],
+    min_amount_yi: float | None = None,
+    max_amount_yi: float | None = None,
+    min_turnover_rate: float | None = None,
+    max_turnover_rate: float | None = None,
+) -> List[str]:
+    """Filter stock codes by latest amount/turnover metrics using export CLI units."""
+    return scan_stocks_cache.filter_stocks_by_trade_metrics(
+        stock_codes=list(stock_codes),
+        min_amount=(
+            min_amount_yi * scan_stocks_cache.AMOUNT_YI_UNIT
+            if min_amount_yi is not None
+            else None
+        ),
+        max_amount=(
+            max_amount_yi * scan_stocks_cache.AMOUNT_YI_UNIT
+            if max_amount_yi is not None
+            else None
+        ),
+        min_turnover_rate=min_turnover_rate,
+        max_turnover_rate=max_turnover_rate,
+    )
+
+
 def scan_and_format(
     stock_codes: Iterable[str],
     buy_types: Sequence[str],
@@ -197,6 +222,10 @@ def parse_args() -> argparse.Namespace:
         default="1",
         help="Manifest version string",
     )
+    parser.add_argument("--min-amount", type=float, help="最小最新成交额（亿元）")
+    parser.add_argument("--max-amount", type=float, help="最大最新成交额（亿元）")
+    parser.add_argument("--min-turnover-rate", type=float, help="最小最新换手率（%%）")
+    parser.add_argument("--max-turnover-rate", type=float, help="最大最新换手率（%%）")
     return parser.parse_args()
 
 
@@ -204,6 +233,13 @@ def main() -> None:
     args = parse_args()
     all_codes = scan_stocks_cache.get_stock_list_from_db()
     stock_codes = all_codes if args.limit <= 0 else all_codes[: args.limit]
+    stock_codes = filter_stock_codes_by_trade_metrics(
+        stock_codes=stock_codes,
+        min_amount_yi=args.min_amount,
+        max_amount_yi=args.max_amount,
+        min_turnover_rate=args.min_turnover_rate,
+        max_turnover_rate=args.max_turnover_rate,
+    )
 
     cache_time = datetime.now().isoformat()
     buy_payload, sell_payload = scan_and_format(
@@ -215,6 +251,7 @@ def main() -> None:
     export_payloads(Path(args.output_dir), buy_payload, sell_payload, version=args.version)
 
     print(f"Exported public scan results to {args.output_dir}")
+    print(f"Scanned codes: {len(stock_codes)}")
     print(f"Buy count: {len(buy_payload['stocks'])}")
     print(f"Sell count: {len(sell_payload['stocks'])}")
 

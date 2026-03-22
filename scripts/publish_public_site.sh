@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-REMOTE_HOST="${REMOTE_HOST:-}"
+REMOTE_HOST="${REMOTE_HOST:-117.50.199.81}"
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_BASE_DIR="${REMOTE_BASE_DIR:-/srv/chananalyzer}"
 
@@ -14,6 +14,9 @@ VERSION="${VERSION:-1}"
 INSTALL_SERVICE_FILES="${INSTALL_SERVICE_FILES:-0}"
 SKIP_FEEDBACK_BUILD="${SKIP_FEEDBACK_BUILD:-1}"
 FEEDBACK_BINARY_NAME="${FEEDBACK_BINARY_NAME:-}"
+
+MIN_AMOUNT="${MIN_AMOUNT:-2}"
+MIN_TURNOVER_RATE="${MIN_TURNOVER_RATE:-5}"
 
 usage() {
   cat <<EOF
@@ -98,6 +101,8 @@ echo "==> Exporting public scan results"
 python "$ROOT_DIR/scripts/export_public_results.py" \
   --output-dir "$ROOT_DIR/dist/publish" \
   --limit "$LIMIT" \
+  --min-amount "$MIN_AMOUNT" \
+  --min-turnover-rate "$MIN_TURNOVER_RATE" \
   --version "$VERSION" >/dev/null
 
 echo "==> Building release artifacts"
