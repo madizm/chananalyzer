@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChanAnalyzer Scan Results</title>
+  <link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">ChanAnalyzer Public Board</p>
+        <h1>缠论扫描结果</h1>
+        <p class="subtitle">离线生成结果，公网只读展示，支持轻量点赞点踩。</p>
+      </div>
+      <div class="meta-card">
+        <div class="meta-row">
+          <span>数据版本</span>
+          <strong id="manifest-version">-</strong>
+        </div>
+        <div class="meta-row">
+          <span>生成时间</span>
+          <strong id="manifest-time">-</strong>
+        </div>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>买点结果</h2>
+          <p id="buy-cache-time" class="panel-meta">每日更新一次</p>
+        </div>
+        <strong id="buy-count">0</strong>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>名称</th>
+              <th>行业</th>
+              <th>现价</th>
+              <th>最新信号</th>
+              <th>信号日期</th>
+              <th>反馈</th>
+            </tr>
+          </thead>
+          <tbody id="buy-table-body">
+            <tr><td colspan="7" class="empty">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>卖点结果</h2>
+          <p id="sell-cache-time" class="panel-meta">每日更新一次</p>
+        </div>
+        <strong id="sell-count">0</strong>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>名称</th>
+              <th>行业</th>
+              <th>现价</th>
+              <th>最新信号</th>
+              <th>信号日期</th>
+              <th>反馈</th>
+            </tr>
+          </thead>
+          <tbody id="sell-table-body">
+            <tr><td colspan="7" class="empty">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="./assets/config.js"></script>
+  <script src="./assets/feedback.js"></script>
+  <script src="./assets/app.js"></script>
+</body>
+</html>

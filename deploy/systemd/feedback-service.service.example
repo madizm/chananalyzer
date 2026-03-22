@@ -1,0 +1,16 @@
+[Unit]
+Description=ChanAnalyzer Feedback Service
+After=network.target
+
+[Service]
+WorkingDirectory=/srv/chananalyzer/feedback
+ExecStart=/srv/chananalyzer/feedback/feedback-service
+Restart=always
+RestartSec=3
+Environment=PORT=8081
+Environment=DB_PATH=/srv/chananalyzer/feedback/feedback.db
+Environment=SITE_DIR=/srv/chananalyzer/site
+Environment=TRUST_PROXY_HEADERS=1
+
+[Install]
+WantedBy=multi-user.target
