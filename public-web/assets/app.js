@@ -8,20 +8,27 @@
     filters: {
       signalDateFrom: "",
       signalDateTo: "",
+      signalType: "",
       amountMin: null,
-      amountMax: null,
       turnoverMin: null,
-      turnoverMax: null,
     },
   };
 
   const FILTER_INPUTS = {
     signalDateFrom: "filter-signal-date-from",
     signalDateTo: "filter-signal-date-to",
+    signalType: "filter-signal-type",
     amountMin: "filter-amount-min",
-    amountMax: "filter-amount-max",
     turnoverMin: "filter-turnover-min",
-    turnoverMax: "filter-turnover-max",
+  };
+
+  const SIGNAL_TYPE_LABELS = {
+    "1": "一买",
+    "1p": "一买衍生",
+    "2": "二买",
+    "2s": "二卖",
+    "3a": "三买A",
+    "3b": "三买B",
   };
 
   async function fetchJson(path) {
@@ -72,6 +79,7 @@
   function filterStocks(stocks) {
     return (stocks || []).filter((stock) => {
       const signalDate = parseSignalDate(stock.latest_signal && stock.latest_signal.date);
+      const signalType = stock.latest_signal && stock.latest_signal.type;
 
       if (state.filters.signalDateFrom) {
         const fromTs = parseSignalDate(state.filters.signalDateFrom);
@@ -87,14 +95,12 @@
         }
       }
 
-      if (state.filters.amountMin !== null) {
-        if (typeof stock.amount !== "number" || stock.amount < state.filters.amountMin) {
-          return false;
-        }
+      if (state.filters.signalType && signalType !== state.filters.signalType) {
+        return false;
       }
 
-      if (state.filters.amountMax !== null) {
-        if (typeof stock.amount !== "number" || stock.amount > state.filters.amountMax) {
+      if (state.filters.amountMin !== null) {
+        if (typeof stock.amount !== "number" || stock.amount < state.filters.amountMin) {
           return false;
         }
       }
@@ -105,14 +111,41 @@
         }
       }
 
-      if (state.filters.turnoverMax !== null) {
-        if (typeof stock.turnover_rate !== "number" || stock.turnover_rate > state.filters.turnoverMax) {
-          return false;
-        }
-      }
-
       return true;
     });
+  }
+
+  function formatSignalType(type) {
+    return SIGNAL_TYPE_LABELS[type] || type || "-";
+  }
+
+  function getAvailableSignalTypes(payloads) {
+    return Array.from(
+      new Set(
+        payloads
+          .flatMap((payload) => (payload && payload.stocks) || [])
+          .map((stock) => stock.latest_signal && stock.latest_signal.type)
+          .filter(Boolean)
+      )
+    ).sort((a, b) => formatSignalType(a).localeCompare(formatSignalType(b), "zh-CN"));
+  }
+
+  function renderSignalTypeOptions() {
+    const select = document.getElementById(FILTER_INPUTS.signalType);
+    const signalTypes = getAvailableSignalTypes([state.payloads.buy, state.payloads.sell]);
+    const currentValue = state.filters.signalType;
+
+    select.innerHTML = [
+      '<option value="">全部信号</option>',
+      ...signalTypes.map((type) => `<option value="${type}">${formatSignalType(type)}</option>`),
+    ].join("");
+
+    if (signalTypes.includes(currentValue)) {
+      select.value = currentValue;
+    } else {
+      select.value = "";
+      state.filters.signalType = "";
+    }
   }
 
   function renderFeedbackCell(code) {
@@ -175,10 +208,9 @@
   function syncFiltersFromInputs() {
     state.filters.signalDateFrom = document.getElementById(FILTER_INPUTS.signalDateFrom).value;
     state.filters.signalDateTo = document.getElementById(FILTER_INPUTS.signalDateTo).value;
+    state.filters.signalType = document.getElementById(FILTER_INPUTS.signalType).value;
     state.filters.amountMin = parseNumberInput(document.getElementById(FILTER_INPUTS.amountMin).value);
-    state.filters.amountMax = parseNumberInput(document.getElementById(FILTER_INPUTS.amountMax).value);
     state.filters.turnoverMin = parseNumberInput(document.getElementById(FILTER_INPUTS.turnoverMin).value);
-    state.filters.turnoverMax = parseNumberInput(document.getElementById(FILTER_INPUTS.turnoverMax).value);
   }
 
   function resetFilters() {
@@ -256,6 +288,7 @@
 
       state.payloads.buy = buyPayload;
       state.payloads.sell = sellPayload;
+      renderSignalTypeOptions();
       syncFiltersFromInputs();
       renderTables();
     } catch (error) {

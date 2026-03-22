@@ -114,7 +114,8 @@ h1, h2 {
   color: var(--ink);
 }
 
-.filter-field input {
+.filter-field input,
+.filter-field select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -124,7 +125,8 @@ h1, h2 {
   font: inherit;
 }
 
-.filter-field input:focus {
+.filter-field input:focus,
+.filter-field select:focus {
   outline: 2px solid rgba(15, 118, 110, 0.18);
   outline-offset: 1px;
   border-color: var(--accent);
