@@ -30,6 +30,7 @@
 import os
 import sys
 import argparse
+import json
 import sqlite3
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -48,6 +49,7 @@ except ImportError:
 
 from Chan import CChan
 from ChanConfig import CChanConfig
+from ChanAnalyzer.database import SessionLocal, ScanRun, ScanResult, ScanSignal, init_db
 from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
 
 # 数据库路径
@@ -55,6 +57,11 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "chan.db")
 AMOUNT_YI_UNIT = 100000000
 
 # 移除缓存，直接从数据库查询
+
+
+def _to_json_text(value: Any) -> str:
+    """将对象转换为 JSON 文本。"""
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _get_tushare_token():
@@ -753,6 +760,94 @@ def _print_grouped_view(
             print(f"  ... 还有 {len(stocks) - 10} 只")
 
 
+def save_results_to_database(
+    results: List[Dict[str, Any]],
+    stock_info: Dict[str, Dict[str, str]],
+    scan_params: Dict[str, Any],
+    started_at: datetime,
+    finished_at: datetime,
+    scanned_count: int,
+) -> int:
+    """保存扫描结果到数据库。"""
+    init_db()
+
+    db = SessionLocal()
+    try:
+        scan_run = ScanRun(
+            source="scan_stocks_cache",
+            started_at=started_at,
+            finished_at=finished_at,
+            scanned_count=scanned_count,
+            result_count=len(results),
+            buy_types=_to_json_text(scan_params.get("buy", [])),
+            sell_types=_to_json_text(scan_params.get("sell", [])),
+            begin_date=scan_params.get("begin"),
+            end_date=scan_params.get("end"),
+            use_weekly=1 if scan_params.get("weekly") else 0,
+            bi_strict=1 if scan_params.get("bi_strict", True) else 0,
+            industry_filters=_to_json_text(scan_params.get("industry") or []),
+            area_filters=_to_json_text(scan_params.get("area") or []),
+            exclude_st=1 if scan_params.get("exclude_st") else 0,
+            group_by=scan_params.get("group_by", "none"),
+            min_amount=scan_params.get("min_amount"),
+            max_amount=scan_params.get("max_amount"),
+            min_turnover_rate=scan_params.get("min_turnover_rate"),
+            max_turnover_rate=scan_params.get("max_turnover_rate"),
+            show_money_flow=1 if scan_params.get("show_money_flow") else 0,
+            sort_by_money_flow=1 if scan_params.get("sort_by_money_flow") else 0,
+            min_money_flow=scan_params.get("min_money_flow", 0) or 0,
+        )
+        db.add(scan_run)
+        db.flush()
+
+        for stock in results:
+            code = stock["code"]
+            info = stock_info.get(code, {}) if stock_info else {}
+            money_flow = stock.get("money_flow") or {}
+            scan_result = ScanResult(
+                run_id=scan_run.id,
+                code=code,
+                name=info.get("name", ""),
+                industry=info.get("industry", ""),
+                area=info.get("area", ""),
+                latest_price=stock.get("latest_price"),
+                change_pct=stock.get("change_pct"),
+                money_flow_net_amount=(
+                    money_flow.get("net_amount") if "error" not in money_flow else None
+                ),
+                money_flow_net_main_amount=(
+                    money_flow.get("net_main_amount")
+                    if "error" not in money_flow
+                    else None
+                ),
+                money_flow_error=money_flow.get("error"),
+            )
+            db.add(scan_result)
+            db.flush()
+
+            for signal in stock.get("signals", []):
+                db.add(
+                    ScanSignal(
+                        result_id=scan_result.id,
+                        run_id=scan_run.id,
+                        code=code,
+                        signal_type=signal["type"],
+                        direction=signal["direction"],
+                        signal_date=signal["date"],
+                        signal_price=float(signal["price"]),
+                        period=signal["period"],
+                    )
+                )
+
+        db.commit()
+        return scan_run.id
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def save_results(
     results: List[Dict[str, Any]],
     filename: str = "scan_results.txt",
@@ -949,6 +1044,7 @@ def main():
     print(f"周期: {'周线' if args.weekly else '日线'}")
     print(f"笔严格模式: {not args.no_strict}")
 
+    started_at = datetime.now()
     results = scan_stocks(
         stock_codes=stock_codes,
         buy_types=args.buy,
@@ -961,6 +1057,7 @@ def main():
         sort_by_money_flow=args.sort_by_money_flow,
         min_money_flow=args.min_money_flow,
     )
+    finished_at = datetime.now()
 
     # 获取股票信息（用于显示名称、行业、地区）
     stock_info = {}
@@ -970,6 +1067,37 @@ def main():
 
     # 打印结果
     print_results(results, stock_info, args.group_by)
+
+    try:
+        scan_run_id = save_results_to_database(
+            results=results,
+            stock_info=stock_info,
+            scan_params={
+                "buy": args.buy,
+                "sell": args.sell,
+                "begin": args.begin,
+                "end": args.end,
+                "weekly": args.weekly,
+                "bi_strict": not args.no_strict,
+                "industry": args.industry,
+                "area": args.area,
+                "exclude_st": args.exclude_st,
+                "group_by": args.group_by,
+                "min_amount": args.min_amount,
+                "max_amount": args.max_amount,
+                "min_turnover_rate": args.min_turnover_rate,
+                "max_turnover_rate": args.max_turnover_rate,
+                "show_money_flow": args.show_money_flow,
+                "sort_by_money_flow": args.sort_by_money_flow,
+                "min_money_flow": args.min_money_flow,
+            },
+            started_at=started_at,
+            finished_at=finished_at,
+            scanned_count=len(stock_codes),
+        )
+        print(f"\n扫描结果已保存到数据库: run_id={scan_run_id}")
+    except Exception as e:
+        print(f"\n警告: 保存扫描结果到数据库失败: {e}")
 
     # 保存结果
     if args.output or results:
