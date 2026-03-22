@@ -12,15 +12,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import scan_stocks_cache
 
 
 DEFAULT_BUY_TYPES = ["1", "1p", "2", "3a", "3b"]
 DEFAULT_SELL_TYPES = ["1s", "2s", "3a", "3b"]
+
+
+def normalize_amount_yi(value: Any) -> float | None:
+    """Convert raw amount to yi yuan for the public payload."""
+    if value is None:
+        return None
+
+    amount = float(value)
+    if amount <= 0:
+        return None
+    return amount / scan_stocks_cache.AMOUNT_YI_UNIT
 
 
 def get_latest_signal(signals: Sequence[Dict[str, Any]]) -> Dict[str, Any] | None:
@@ -33,14 +49,17 @@ def get_latest_signal(signals: Sequence[Dict[str, Any]]) -> Dict[str, Any] | Non
 def format_scan_results(
     results: Sequence[Dict[str, Any]],
     stock_info: Dict[str, Dict[str, Any]],
+    trade_metrics: Dict[str, Dict[str, Any]] | None = None,
     cache_time: str | None = None,
 ) -> Dict[str, Any]:
     """Convert raw scan output to the public JSON contract."""
     formatted_stocks: List[Dict[str, Any]] = []
+    trade_metrics = trade_metrics or {}
 
     for item in results:
         code = item["code"]
         info = stock_info.get(code, {})
+        metrics = trade_metrics.get(code, {})
         signals = item.get("signals", [])
         formatted_stocks.append(
             {
@@ -48,6 +67,8 @@ def format_scan_results(
                 "name": info.get("name", ""),
                 "industry": info.get("industry", ""),
                 "current_price": item.get("latest_price"),
+                "amount": normalize_amount_yi(metrics.get("amount")),
+                "turnover_rate": metrics.get("turnover_rate"),
                 "change_pct": item.get("change_pct"),
                 "signals": signals,
                 "latest_signal": get_latest_signal(signals),
@@ -128,9 +149,20 @@ def scan_and_format(
         }
     )
     stock_info = scan_stocks_cache.get_stock_info_bulk(codes) if codes else {}
+    trade_metrics = scan_stocks_cache.get_latest_trade_metrics_bulk(codes) if codes else {}
 
-    buy_payload = format_scan_results(buy_results, stock_info, cache_time=cache_time)
-    sell_payload = format_scan_results(sell_results, stock_info, cache_time=cache_time)
+    buy_payload = format_scan_results(
+        buy_results,
+        stock_info,
+        trade_metrics=trade_metrics,
+        cache_time=cache_time,
+    )
+    sell_payload = format_scan_results(
+        sell_results,
+        stock_info,
+        trade_metrics=trade_metrics,
+        cache_time=cache_time,
+    )
     return buy_payload, sell_payload
 
 

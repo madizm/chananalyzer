@@ -10,6 +10,12 @@ The site expects these files to be hosted alongside the built assets:
 - `sell_scan_results.json`
 - `manifest.json`
 
+Each stock item in the buy/sell payloads includes:
+
+- `current_price`
+- `amount`: latest daily turnover amount in yi yuan
+- `turnover_rate`: latest daily turnover rate in percent
+
 It also expects a feedback API:
 
 - `GET /api/feedback/summary?codes=...&device_id=...`

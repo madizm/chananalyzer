@@ -23,6 +23,14 @@
     return typeof value === "number" ? value.toFixed(2) : "--";
   }
 
+  function formatAmount(value) {
+    return typeof value === "number" ? value.toFixed(2) : "--";
+  }
+
+  function formatTurnoverRate(value) {
+    return typeof value === "number" ? `${value.toFixed(2)}%` : "--";
+  }
+
   function renderFeedbackCell(code) {
     const item = state.feedback.get(code) || {
       up_count: 0,
@@ -49,7 +57,7 @@
     document.getElementById(cacheTimeId).textContent = `更新时间 ${formatDate(payload.cache_time)}，每日更新一次`;
 
     if (!stocks.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无结果</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="empty">暂无结果</td></tr>';
       return;
     }
 
@@ -61,6 +69,8 @@
           <td>${stock.name || ""}</td>
           <td>${stock.industry || ""}</td>
           <td>${formatPrice(stock.current_price)}</td>
+          <td>${formatAmount(stock.amount)}</td>
+          <td>${formatTurnoverRate(stock.turnover_rate)}</td>
           <td>${signal.direction || "-"} ${signal.type || ""}</td>
           <td>${signal.date || "-"}</td>
           <td>${renderFeedbackCell(stock.code)}</td>
@@ -125,8 +135,8 @@
       renderTable("buy-table-body", buyPayload, "buy-count", "buy-cache-time");
       renderTable("sell-table-body", sellPayload, "sell-count", "sell-cache-time");
     } catch (error) {
-      document.getElementById("buy-table-body").innerHTML = `<tr><td colspan="7" class="empty">${error.message}</td></tr>`;
-      document.getElementById("sell-table-body").innerHTML = `<tr><td colspan="7" class="empty">${error.message}</td></tr>`;
+      document.getElementById("buy-table-body").innerHTML = `<tr><td colspan="9" class="empty">${error.message}</td></tr>`;
+      document.getElementById("sell-table-body").innerHTML = `<tr><td colspan="9" class="empty">${error.message}</td></tr>`;
     }
   }
 

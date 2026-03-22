@@ -18,6 +18,13 @@ bash scripts/publish_public_site.sh --limit 100 --goarch amd64
 3. 构建 Linux feedback 二进制到 `dist/release/`
 4. 通过 `rsync` 同步到服务器
 
+当前公网结果 JSON 里每个股票对象还包含：
+
+- `amount`：最新日线成交额，单位为亿元
+- `turnover_rate`：最新日线换手率，单位为百分比数值
+
+这两个字段来自本地日线缓存，不是实时盘口数据。
+
 常用参数：
 
 ```bash
