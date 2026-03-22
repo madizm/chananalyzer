@@ -169,6 +169,17 @@ thead th {
   font-size: 14px;
 }
 
+.stock-code-link {
+  color: var(--accent-strong);
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.stock-code-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .feedback {
   display: flex;
   align-items: center;

@@ -35,7 +35,7 @@
     const base = window.PUBLIC_APP_CONFIG.resultBaseUrl.replace(/\/$/, "");
     const response = await fetch(`${base}/${path}`);
     if (!response.ok) {
-      throw new Error(`加载 ${path} 失败`);
+      throw new Error("结果加载失败，请稍后再试");
     }
     return response.json();
   }
@@ -160,18 +160,27 @@
 
     return `
       <div class="feedback" data-code="${code}">
-        <button class="${upActive}" data-action="up" type="button">赞 ${item.up_count}</button>
-        <button class="${downActive}" data-action="down" type="button">踩 ${item.down_count}</button>
-        <span class="score">分数 ${item.score}</span>
+        <button class="${upActive}" data-action="up" type="button">看好 ${item.up_count}</button>
+        <button class="${downActive}" data-action="down" type="button">谨慎 ${item.down_count}</button>
+        <span class="score">热度 ${item.score}</span>
       </div>
     `;
+  }
+
+  function renderStockCodeCell(code) {
+    if (!code) {
+      return "-";
+    }
+
+    const href = `https://stockpage.10jqka.com.cn/${encodeURIComponent(code)}/`;
+    return `<a class="stock-code-link" href="${href}" target="_blank" rel="noopener noreferrer">${code}</a>`;
   }
 
   function renderTable(tableBodyId, payload, countId, cacheTimeId, emptyText) {
     const tbody = document.getElementById(tableBodyId);
     const stocks = filterStocks(payload.stocks || []);
     document.getElementById(countId).textContent = stocks.length;
-    document.getElementById(cacheTimeId).textContent = `更新时间 ${formatDate(payload.cache_time)}，每日更新一次`;
+    document.getElementById(cacheTimeId).textContent = `更新时间 ${formatDate(payload.cache_time)}，每日更新`;
 
     if (!stocks.length) {
       tbody.innerHTML = `<tr><td colspan="9" class="empty">${emptyText}</td></tr>`;
@@ -182,7 +191,7 @@
       const signal = stock.latest_signal || {};
       return `
         <tr>
-          <td>${stock.code}</td>
+          <td>${renderStockCodeCell(stock.code)}</td>
           <td>${stock.name || ""}</td>
           <td>${stock.industry || ""}</td>
           <td>${formatPrice(stock.current_price)}</td>
@@ -198,10 +207,10 @@
 
   function renderTables() {
     if (state.payloads.buy) {
-      renderTable("buy-table-body", state.payloads.buy, "buy-count", "buy-cache-time", "筛选后暂无买点结果");
+      renderTable("buy-table-body", state.payloads.buy, "buy-count", "buy-cache-time", "当前条件下暂无买点结果");
     }
     if (state.payloads.sell) {
-      renderTable("sell-table-body", state.payloads.sell, "sell-count", "sell-cache-time", "筛选后暂无卖点结果");
+      renderTable("sell-table-body", state.payloads.sell, "sell-count", "sell-cache-time", "当前条件下暂无卖点结果");
     }
   }
 

@@ -3,24 +3,24 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ChanAnalyzer Scan Results</title>
+  <title>ChanAnalyzer 缠论扫描结果</title>
   <link rel="stylesheet" href="./assets/styles.css">
 </head>
 <body>
   <main class="page">
     <header class="hero">
       <div>
-        <p class="eyebrow">ChanAnalyzer Public Board</p>
+        <p class="eyebrow">ChanAnalyzer</p>
         <h1>缠论扫描结果</h1>
-        <p class="subtitle">离线生成结果，公网只读展示，支持轻量点赞点踩。</p>
+        <p class="subtitle">聚合买点与卖点结果，方便快速查看和筛选。</p>
       </div>
       <div class="meta-card">
         <div class="meta-row">
-          <span>数据版本</span>
+          <span>更新批次</span>
           <strong id="manifest-version">-</strong>
         </div>
         <div class="meta-row">
-          <span>生成时间</span>
+          <span>更新时间</span>
           <strong id="manifest-time">-</strong>
         </div>
       </div>
@@ -29,8 +29,8 @@
     <section class="panel filter-panel">
       <div class="panel-header filter-header">
         <div>
-          <h2>前端过滤</h2>
-          <p class="panel-meta">支持按信号日期、最新信号类型、最小成交额和最小换手率过滤。</p>
+          <h2>筛选条件</h2>
+          <p class="panel-meta">可按信号日期、信号类型、成交额和换手率筛选。</p>
         </div>
         <button id="filter-reset" class="secondary-btn" type="button">重置</button>
       </div>
@@ -80,11 +80,11 @@
               <th>换手率</th>
               <th>最新信号</th>
               <th>信号日期</th>
-              <th>反馈</th>
+              <th>看法</th>
             </tr>
           </thead>
           <tbody id="buy-table-body">
-            <tr><td colspan="9" class="empty">加载中...</td></tr>
+            <tr><td colspan="9" class="empty">正在加载结果...</td></tr>
           </tbody>
         </table>
       </div>
@@ -110,11 +110,11 @@
               <th>换手率</th>
               <th>最新信号</th>
               <th>信号日期</th>
-              <th>反馈</th>
+              <th>看法</th>
             </tr>
           </thead>
           <tbody id="sell-table-body">
-            <tr><td colspan="9" class="empty">加载中...</td></tr>
+            <tr><td colspan="9" class="empty">正在加载结果...</td></tr>
           </tbody>
         </table>
       </div>

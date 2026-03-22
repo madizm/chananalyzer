@@ -29,7 +29,7 @@
     });
     const response = await fetch(`${base}/summary?${params.toString()}`);
     if (!response.ok) {
-      throw new Error("加载反馈汇总失败");
+      throw new Error("看法数据加载失败");
     }
 
     const data = await response.json();
@@ -51,7 +51,7 @@
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || "提交投票失败");
+      throw new Error(data.error || "提交失败，请稍后再试");
     }
     return response.json();
   }
