@@ -678,6 +678,7 @@ python scan_stocks_cache.py --sell 2s
 | `--kl-types` | K线周期类型 | `--kl-types DAY WEEK` |
 | `--refresh` | 清除缓存后重新获取 | `--refresh` |
 | `--verbose` | 显示详细日志 | `--verbose` |
+| `--only-missing` | 只补齐已缓存日线中的历史缺失区间 | `--all --only-missing` |
 
 ---
 
