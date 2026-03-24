@@ -10,6 +10,9 @@ K线数据更新脚本
     # 更新所有已缓存的股票
     python -m scripts.update_data --all
 
+    # 使用 BaoStock 更新
+    python -m scripts.update_data --codes 000001 --data-source baostock
+
     # 更新特定周期
     python -m scripts.update_data --codes 000001 --kl-types DAY WEEK
 
@@ -76,9 +79,10 @@ import time
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from Common.CEnum import KL_TYPE
+from Common.CEnum import AUTYPE, KL_TYPE
 from ChanAnalyzer.database import get_db, init_db, KLineData, get_kl_type_str
 from ChanAnalyzer.data_manager import DataManager
+from DataAPI.BaoStockAPI import CBaoStock
 from DataAPI.TushareAPI import CTushareAPI
 
 # 配置日志
@@ -97,10 +101,29 @@ def _log(msg):
         logger.info(msg)
 
 
+def normalize_baostock_code(code: str) -> str:
+    """将裸股票代码转换为 BaoStock 所需格式。"""
+    code = code.strip().lower()
+    if "." in code:
+        return code
+    if code.startswith(("sh", "sz")) and len(code) == 8:
+        return f"{code[:2]}.{code[2:]}"
+    if code.startswith(("6", "9")):
+        return f"sh.{code}"
+    return f"sz.{code}"
+
+
+def get_api_class(data_source: str):
+    if data_source == "baostock":
+        return CBaoStock
+    return CTushareAPI
+
+
 def update_stock(
     code: str,
     kl_types: List[KL_TYPE],
     data_manager: DataManager,
+    data_source: str = "tushare",
     refresh: bool = False,
     verbose: bool = False
 ) -> dict:
@@ -112,10 +135,13 @@ def update_stock(
     """
     result = {
         "code": code,
+        "data_source": data_source,
         "success": True,
         "kl_types": {},
         "error": None
     }
+    api_class = get_api_class(data_source)
+    api_code = normalize_baostock_code(code) if data_source == "baostock" else code
 
     for kl_type in kl_types:
         kl_type_str = get_kl_type_str(kl_type)
@@ -134,12 +160,12 @@ def update_stock(
 
             # 创建数据源获取函数
             def fetcher(code, kl_type, begin, end):
-                api = CTushareAPI(
-                    code=code,
+                api = api_class(
+                    code=api_code,
                     k_type=kl_type,
                     begin_date=begin,
                     end_date=end,
-                    autype=None  # 不复权
+                    autype=AUTYPE.NONE  # 不复权
                 )
                 return api.get_kl_data()
 
@@ -181,6 +207,7 @@ def get_all_cached_stocks() -> List[str]:
 def update_all_stocks(
     kl_types: List[KL_TYPE],
     data_manager: DataManager,
+    data_source: str = "tushare",
     refresh: bool = False
 ):
     """更新所有已缓存的股票"""
@@ -201,7 +228,7 @@ def update_all_stocks(
         iterator = tqdm(codes, desc="更新进度", unit="股")
 
     for code in iterator:
-        result = update_stock(code, kl_types, data_manager, refresh)
+        result = update_stock(code, kl_types, data_manager, data_source, refresh)
 
         if result["success"]:
             success_count += 1
@@ -245,6 +272,12 @@ def main():
         action='store_true',
         help='显示详细日志'
     )
+    parser.add_argument(
+        '--data-source',
+        default='tushare',
+        choices=['tushare', 'baostock'],
+        help='数据源 (默认: tushare)'
+    )
 
     args = parser.parse_args()
 
@@ -269,21 +302,26 @@ def main():
     }
     kl_types = [kl_type_map[t] for t in args.kl_types]
 
-    # 执行更新
-    if args.all:
-        update_all_stocks(kl_types, data_manager, args.refresh)
-    elif args.codes:
-        for code in args.codes:
-            result = update_stock(code, kl_types, data_manager, args.refresh)
-            print(f"\n{code} 更新结果:")
-            for kl_type_str, info in result["kl_types"].items():
-                if "error" in info:
-                    print(f"  {kl_type_str}: 失败 - {info['error']}")
-                else:
-                    print(f"  {kl_type_str}: {info['count']} 条 ({info['first_date']} ~ {info['last_date']})")
-    else:
-        parser.print_help()
-        print("\n提示: 使用 --codes 指定股票，或 --all 更新所有已缓存股票")
+    api_class = get_api_class(args.data_source)
+    api_class.do_init()
+    try:
+        # 执行更新
+        if args.all:
+            update_all_stocks(kl_types, data_manager, args.data_source, args.refresh)
+        elif args.codes:
+            for code in args.codes:
+                result = update_stock(code, kl_types, data_manager, args.data_source, args.refresh)
+                print(f"\n{code} 更新结果:")
+                for kl_type_str, info in result["kl_types"].items():
+                    if "error" in info:
+                        print(f"  {kl_type_str}: 失败 - {info['error']}")
+                    else:
+                        print(f"  {kl_type_str}: {info['count']} 条 ({info['first_date']} ~ {info['last_date']})")
+        else:
+            parser.print_help()
+            print("\n提示: 使用 --codes 指定股票，或 --all 更新所有已缓存股票")
+    finally:
+        api_class.do_close()
 
 
 if __name__ == "__main__":
