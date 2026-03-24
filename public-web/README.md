@@ -18,8 +18,10 @@ Each stock item in the buy/sell payloads includes:
 
 It also expects a feedback API:
 
-- `GET /api/feedback/summary?codes=...&device_id=...`
+- `POST /api/feedback/summary` with JSON body `{"signals":[{"code":"000001","signal_date":"2026/03/24"}]}`
 - `POST /api/feedback/vote`
+
+The page defaults the signal-date filter to the last 3 days including today.
 
 ## Local Preview
 

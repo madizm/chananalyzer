@@ -31,6 +31,26 @@
     "3b": "三买B",
   };
 
+  function formatDateInputValue(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function getDefaultDateRange() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const from = new Date(today);
+    from.setDate(from.getDate() - 2);
+
+    return {
+      signalDateFrom: formatDateInputValue(from),
+      signalDateTo: formatDateInputValue(today),
+    };
+  }
+
   async function fetchJson(path) {
     const base = window.PUBLIC_APP_CONFIG.resultBaseUrl.replace(/\/$/, "");
     const response = await fetch(`${base}/${path}`);
@@ -119,6 +139,10 @@
     return SIGNAL_TYPE_LABELS[type] || type || "-";
   }
 
+  function getFeedbackKey(code, signalDate) {
+    return `${code || ""}::${signalDate || ""}`;
+  }
+
   function getAvailableSignalTypes(payloads) {
     return Array.from(
       new Set(
@@ -148,8 +172,9 @@
     }
   }
 
-  function renderFeedbackCell(code) {
-    const item = state.feedback.get(code) || {
+  function renderFeedbackCell(code, signalDate) {
+    const key = getFeedbackKey(code, signalDate);
+    const item = state.feedback.get(key) || {
       up_count: 0,
       down_count: 0,
       score: 0,
@@ -159,7 +184,7 @@
     const downActive = item.my_vote === "down" ? "vote-btn active negative" : "vote-btn negative";
 
     return `
-      <div class="feedback" data-code="${code}">
+      <div class="feedback" data-code="${code}" data-signal-date="${signalDate || ""}" data-key="${key}">
         <button class="${upActive}" data-action="up" type="button">看好 ${item.up_count}</button>
         <button class="${downActive}" data-action="down" type="button">谨慎 ${item.down_count}</button>
         <span class="score">热度 ${item.score}</span>
@@ -199,7 +224,7 @@
           <td>${formatTurnoverRate(stock.turnover_rate)}</td>
           <td>${signal.direction || "-"} ${signal.type || ""}</td>
           <td>${signal.date || "-"}</td>
-          <td>${renderFeedbackCell(stock.code)}</td>
+          <td>${renderFeedbackCell(stock.code, signal.date || "")}</td>
         </tr>
       `;
     }).join("");
@@ -222,11 +247,18 @@
     state.filters.turnoverMin = parseNumberInput(document.getElementById(FILTER_INPUTS.turnoverMin).value);
   }
 
-  function resetFilters() {
-    Object.values(FILTER_INPUTS).forEach((id) => {
-      document.getElementById(id).value = "";
-    });
+  function applyDefaultFilters() {
+    const defaults = getDefaultDateRange();
+    document.getElementById(FILTER_INPUTS.signalDateFrom).value = defaults.signalDateFrom;
+    document.getElementById(FILTER_INPUTS.signalDateTo).value = defaults.signalDateTo;
+    document.getElementById(FILTER_INPUTS.signalType).value = "";
+    document.getElementById(FILTER_INPUTS.amountMin).value = "";
+    document.getElementById(FILTER_INPUTS.turnoverMin).value = "";
     syncFiltersFromInputs();
+  }
+
+  function resetFilters() {
+    applyDefaultFilters();
     renderTables();
   }
 
@@ -250,19 +282,21 @@
 
       const wrapper = button.closest(".feedback");
       const code = wrapper.dataset.code;
-      const current = state.feedback.get(code) || {};
+      const signalDate = wrapper.dataset.signalDate || "";
+      const key = wrapper.dataset.key || getFeedbackKey(code, signalDate);
+      const current = state.feedback.get(key) || {};
       const clicked = button.dataset.action;
       const action = current.my_vote === clicked ? "clear" : clicked;
 
       wrapper.classList.add("busy");
       try {
-        const updated = await window.PublicFeedback.submitVote(code, action);
-        state.feedback.set(code, updated);
-        wrapper.outerHTML = renderFeedbackCell(code);
+        const updated = await window.PublicFeedback.submitVote(code, signalDate, action);
+        state.feedback.set(key, updated);
+        wrapper.outerHTML = renderFeedbackCell(code, signalDate);
       } catch (error) {
         window.alert(error.message);
       } finally {
-        const currentWrapper = document.querySelector(`.feedback[data-code="${code}"]`);
+        const currentWrapper = document.querySelector(`.feedback[data-key="${key}"]`);
         if (currentWrapper) {
           currentWrapper.classList.remove("busy");
         }
@@ -273,6 +307,7 @@
   async function init() {
     bindFilterEvents();
     bindVoteEvents();
+    applyDefaultFilters();
 
     try {
       const [manifest, buyPayload, sellPayload] = await Promise.all([
@@ -284,12 +319,19 @@
       document.getElementById("manifest-version").textContent = manifest.version || "-";
       document.getElementById("manifest-time").textContent = formatDate(manifest.generated_at);
 
-      const codes = Array.from(
-        new Set([...(buyPayload.stocks || []), ...(sellPayload.stocks || [])].map((item) => item.code))
+      const signals = Array.from(
+        new Map(
+          [...(buyPayload.stocks || []), ...(sellPayload.stocks || [])]
+            .filter((item) => item.code && item.latest_signal && item.latest_signal.date)
+            .map((item) => {
+              const key = getFeedbackKey(item.code, item.latest_signal.date);
+              return [key, { code: item.code, signal_date: item.latest_signal.date }];
+            })
+        ).values()
       );
 
       try {
-        state.feedback = await window.PublicFeedback.loadSummary(codes);
+        state.feedback = await window.PublicFeedback.loadSummary(signals);
       } catch (error) {
         console.error(error);
         state.feedback = new Map();

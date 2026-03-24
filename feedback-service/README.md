@@ -11,8 +11,8 @@ Standalone Go service for public thumbs up / thumbs down feedback.
 
 ## Endpoints
 
-- `GET /api/feedback/summary?codes=000001,600519&device_id=<uuid>`
-- `POST /api/feedback/vote`
+- `POST /api/feedback/summary` with JSON body `{"signals":[{"code":"000001","signal_date":"2026/03/24"}]}`
+- `POST /api/feedback/vote` with JSON body `{"code":"000001","signal_date":"2026/03/24","action":"up","device_id":"device-12345678"}`
 - `GET /healthz`
 
 ## Run

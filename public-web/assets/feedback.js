@@ -17,34 +17,35 @@
     return deviceId;
   }
 
-  async function loadSummary(codes) {
-    if (!codes.length) {
+  async function loadSummary(signals) {
+    if (!signals.length) {
       return new Map();
     }
 
     const base = window.PUBLIC_APP_CONFIG.feedbackApiBase;
-    const params = new URLSearchParams({
-      codes: codes.join(","),
-      device_id: getDeviceId(),
+    const response = await fetch(`${base}/summary`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ signals }),
     });
-    const response = await fetch(`${base}/summary?${params.toString()}`);
     if (!response.ok) {
       throw new Error("看法数据加载失败");
     }
 
     const data = await response.json();
     const summary = new Map();
-    (data.items || []).forEach((item) => summary.set(item.code, item));
+    (data.items || []).forEach((item) => summary.set(`${item.code}::${item.signal_date}`, item));
     return summary;
   }
 
-  async function submitVote(code, action) {
+  async function submitVote(code, signalDate, action) {
     const base = window.PUBLIC_APP_CONFIG.feedbackApiBase;
     const response = await fetch(`${base}/vote`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         code,
+        signal_date: signalDate,
         action,
         device_id: getDeviceId(),
       }),

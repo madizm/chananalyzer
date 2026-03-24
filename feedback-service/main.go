@@ -28,11 +28,12 @@ type app struct {
 }
 
 type codeStore struct {
-	mu        sync.RWMutex
-	codes     map[string]struct{}
-	siteDir   string
-	lastLoad  time.Time
-	lastCheck time.Time
+	mu          sync.RWMutex
+	codes       map[string]struct{}
+	signalDates map[string]map[string]struct{}
+	siteDir     string
+	lastLoad    time.Time
+	lastCheck   time.Time
 }
 
 type memoryLimiter struct {
@@ -43,23 +44,42 @@ type memoryLimiter struct {
 }
 
 type publicResults struct {
-	Stocks []struct {
-		Code string `json:"code"`
-	} `json:"stocks"`
+	Stocks []publicStock `json:"stocks"`
+}
+
+type publicStock struct {
+	Code         string        `json:"code"`
+	LatestSignal *publicSignal `json:"latest_signal"`
+}
+
+type publicSignal struct {
+	Date string `json:"date"`
 }
 
 type summaryItem struct {
-	Code      string  `json:"code"`
-	UpCount   int     `json:"up_count"`
-	DownCount int     `json:"down_count"`
-	Score     int     `json:"score"`
-	MyVote    *string `json:"my_vote"`
+	Code       string  `json:"code"`
+	SignalDate string  `json:"signal_date"`
+	UpCount    int     `json:"up_count"`
+	DownCount  int     `json:"down_count"`
+	Score      int     `json:"score"`
+	MyVote     *string `json:"my_vote,omitempty"`
 }
 
 type voteRequest struct {
-	Code     string `json:"code"`
-	Action   string `json:"action"`
-	DeviceID string `json:"device_id"`
+	Code       string `json:"code"`
+	SignalDate string `json:"signal_date"`
+	Action     string `json:"action"`
+	DeviceID   string `json:"device_id"`
+}
+
+type signalRef struct {
+	Code       string `json:"code"`
+	SignalDate string `json:"signal_date"`
+}
+
+type summaryRequest struct {
+	Codes   []string    `json:"codes"`
+	Signals []signalRef `json:"signals"`
 }
 
 var (
@@ -88,8 +108,9 @@ func main() {
 		siteDir:           siteDir,
 		trustProxyHeaders: trustProxyHeaders,
 		codeStore: &codeStore{
-			codes:   make(map[string]struct{}),
-			siteDir: siteDir,
+			codes:       make(map[string]struct{}),
+			signalDates: make(map[string]map[string]struct{}),
+			siteDir:     siteDir,
 		},
 		ipLimiter:     newMemoryLimiter(20, time.Minute),
 		deviceLimiter: newMemoryLimiter(8, time.Minute),
@@ -118,18 +139,21 @@ func initDB(db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS stock_feedback_votes (
 			code TEXT NOT NULL,
+			signal_date TEXT NOT NULL,
 			device_id TEXT NOT NULL,
 			vote TEXT NOT NULL,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
-			PRIMARY KEY (code, device_id)
+			PRIMARY KEY (code, signal_date, device_id)
 		);`,
 		`CREATE TABLE IF NOT EXISTS stock_feedback_summary (
-			code TEXT PRIMARY KEY,
+			code TEXT NOT NULL,
+			signal_date TEXT NOT NULL,
 			up_count INTEGER NOT NULL DEFAULT 0,
 			down_count INTEGER NOT NULL DEFAULT 0,
 			score INTEGER NOT NULL DEFAULT 0,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (code, signal_date)
 		);`,
 	}
 	for _, stmt := range stmts {
@@ -137,7 +161,7 @@ func initDB(db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	return migrateLegacyTables(db)
 }
 
 func (a *app) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +169,7 @@ func (a *app) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleSummary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -154,25 +178,28 @@ func (a *app) handleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deviceID := r.URL.Query().Get("device_id")
-	if deviceID != "" && !devicePattern.MatchString(deviceID) {
-		writeError(w, http.StatusBadRequest, "invalid device_id")
+	var req summaryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
 
-	codes := splitCodes(r.URL.Query().Get("codes"))
-	if len(codes) == 0 {
+	signals := normalizeSignalRefs(req.Signals)
+	if len(signals) == 0 {
+		signals = a.codeStore.signalRefsForCodes(req.Codes)
+	}
+	if len(signals) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"items": []summaryItem{}})
 		return
 	}
-	for _, code := range codes {
-		if !a.codeStore.has(code) {
+	for _, signal := range signals {
+		if !a.codeStore.hasSignal(signal.Code, signal.SignalDate) {
 			writeError(w, http.StatusBadRequest, "unknown code")
 			return
 		}
 	}
 
-	items, err := a.fetchSummary(r.Context(), codes, deviceID)
+	items, err := a.fetchSummary(r.Context(), signals)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load summary")
 		return
@@ -206,6 +233,11 @@ func (a *app) handleVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
+	req.SignalDate = strings.TrimSpace(req.SignalDate)
+	if req.SignalDate == "" {
+		writeError(w, http.StatusBadRequest, "invalid signal_date")
+		return
+	}
 	if !devicePattern.MatchString(req.DeviceID) {
 		writeError(w, http.StatusBadRequest, "invalid device_id")
 		return
@@ -214,7 +246,7 @@ func (a *app) handleVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "too many requests from this device")
 		return
 	}
-	if !a.codeStore.has(req.Code) {
+	if !a.codeStore.hasSignal(req.Code, req.SignalDate) {
 		writeError(w, http.StatusBadRequest, "unknown code")
 		return
 	}
@@ -234,35 +266,21 @@ func (a *app) handleVote(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
-func (a *app) fetchSummary(ctx context.Context, codes []string, deviceID string) ([]summaryItem, error) {
-	items := make([]summaryItem, 0, len(codes))
-	for _, code := range codes {
-		item := summaryItem{Code: code}
+func (a *app) fetchSummary(ctx context.Context, signals []signalRef) ([]summaryItem, error) {
+	items := make([]summaryItem, 0, len(signals))
+	for _, signal := range signals {
+		item := summaryItem{Code: signal.Code, SignalDate: signal.SignalDate}
 		row := a.db.QueryRowContext(
 			ctx,
-			`SELECT up_count, down_count, score FROM stock_feedback_summary WHERE code = ?`,
-			code,
+			`SELECT up_count, down_count, score FROM stock_feedback_summary WHERE code = ? AND signal_date = ?`,
+			signal.Code,
+			signal.SignalDate,
 		)
 		switch err := row.Scan(&item.UpCount, &item.DownCount, &item.Score); {
 		case err == nil:
 		case errors.Is(err, sql.ErrNoRows):
 		default:
 			return nil, err
-		}
-
-		if deviceID != "" {
-			var vote string
-			err := a.db.QueryRowContext(
-				ctx,
-				`SELECT vote FROM stock_feedback_votes WHERE code = ? AND device_id = ?`,
-				code,
-				deviceID,
-			).Scan(&vote)
-			if err == nil {
-				item.MyVote = &vote
-			} else if !errors.Is(err, sql.ErrNoRows) {
-				return nil, err
-			}
 		}
 		items = append(items, item)
 	}
@@ -279,8 +297,9 @@ func (a *app) applyVote(ctx context.Context, req voteRequest) (summaryItem, erro
 	var oldVote string
 	err = tx.QueryRowContext(
 		ctx,
-		`SELECT vote FROM stock_feedback_votes WHERE code = ? AND device_id = ?`,
+		`SELECT vote FROM stock_feedback_votes WHERE code = ? AND signal_date = ? AND device_id = ?`,
 		req.Code,
+		req.SignalDate,
 		req.DeviceID,
 	).Scan(&oldVote)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -294,8 +313,9 @@ func (a *app) applyVote(ctx context.Context, req voteRequest) (summaryItem, erro
 	if req.Action == "clear" {
 		if _, err := tx.ExecContext(
 			ctx,
-			`DELETE FROM stock_feedback_votes WHERE code = ? AND device_id = ?`,
+			`DELETE FROM stock_feedback_votes WHERE code = ? AND signal_date = ? AND device_id = ?`,
 			req.Code,
+			req.SignalDate,
 			req.DeviceID,
 		); err != nil {
 			return summaryItem{}, err
@@ -303,11 +323,12 @@ func (a *app) applyVote(ctx context.Context, req voteRequest) (summaryItem, erro
 	} else {
 		if _, err := tx.ExecContext(
 			ctx,
-			`INSERT INTO stock_feedback_votes(code, device_id, vote, created_at, updated_at)
-			 VALUES(?, ?, ?, ?, ?)
-			 ON CONFLICT(code, device_id)
+			`INSERT INTO stock_feedback_votes(code, signal_date, device_id, vote, created_at, updated_at)
+			 VALUES(?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(code, signal_date, device_id)
 			 DO UPDATE SET vote = excluded.vote, updated_at = excluded.updated_at`,
 			req.Code,
+			req.SignalDate,
 			req.DeviceID,
 			req.Action,
 			now,
@@ -319,7 +340,12 @@ func (a *app) applyVote(ctx context.Context, req voteRequest) (summaryItem, erro
 
 	upCount, downCount, score := applyCounts(oldVote, req.Action)
 	var currentUp, currentDown int
-	row := tx.QueryRowContext(ctx, `SELECT up_count, down_count FROM stock_feedback_summary WHERE code = ?`, req.Code)
+	row := tx.QueryRowContext(
+		ctx,
+		`SELECT up_count, down_count FROM stock_feedback_summary WHERE code = ? AND signal_date = ?`,
+		req.Code,
+		req.SignalDate,
+	)
 	switch err := row.Scan(&currentUp, &currentDown); {
 	case err == nil:
 		upCount += currentUp
@@ -340,11 +366,12 @@ func (a *app) applyVote(ctx context.Context, req voteRequest) (summaryItem, erro
 
 	if _, err := tx.ExecContext(
 		ctx,
-		`INSERT INTO stock_feedback_summary(code, up_count, down_count, score, updated_at)
-		 VALUES(?, ?, ?, ?, ?)
-		 ON CONFLICT(code)
+		`INSERT INTO stock_feedback_summary(code, signal_date, up_count, down_count, score, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(code, signal_date)
 		 DO UPDATE SET up_count = excluded.up_count, down_count = excluded.down_count, score = excluded.score, updated_at = excluded.updated_at`,
 		req.Code,
+		req.SignalDate,
 		upCount,
 		downCount,
 		score,
@@ -362,11 +389,12 @@ func (a *app) applyVote(ctx context.Context, req voteRequest) (summaryItem, erro
 		myVote = &req.Action
 	}
 	return summaryItem{
-		Code:      req.Code,
-		UpCount:   upCount,
-		DownCount: downCount,
-		Score:     score,
-		MyVote:    myVote,
+		Code:       req.Code,
+		SignalDate: req.SignalDate,
+		UpCount:    upCount,
+		DownCount:  downCount,
+		Score:      score,
+		MyVote:     myVote,
 	}, nil
 }
 
@@ -410,6 +438,7 @@ func (c *codeStore) reloadLocked() error {
 		filepath.Join(c.siteDir, "sell_scan_results.json"),
 	}
 	updated := make(map[string]struct{})
+	signalDates := make(map[string]map[string]struct{})
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -425,10 +454,20 @@ func (c *codeStore) reloadLocked() error {
 		for _, stock := range payload.Stocks {
 			if codePattern.MatchString(stock.Code) {
 				updated[stock.Code] = struct{}{}
+				if stock.LatestSignal != nil {
+					signalDate := strings.TrimSpace(stock.LatestSignal.Date)
+					if signalDate != "" {
+						if signalDates[stock.Code] == nil {
+							signalDates[stock.Code] = make(map[string]struct{})
+						}
+						signalDates[stock.Code][signalDate] = struct{}{}
+					}
+				}
 			}
 		}
 	}
 	c.codes = updated
+	c.signalDates = signalDates
 	c.lastLoad = time.Now()
 	return nil
 }
@@ -438,6 +477,35 @@ func (c *codeStore) has(code string) bool {
 	defer c.mu.RUnlock()
 	_, ok := c.codes[code]
 	return ok
+}
+
+func (c *codeStore) hasSignal(code, signalDate string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	dates := c.signalDates[code]
+	if len(dates) == 0 {
+		return false
+	}
+	_, ok := dates[signalDate]
+	return ok
+}
+
+func (c *codeStore) signalRefsForCodes(codes []string) []signalRef {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	normalized := normalizeCodes(codes)
+	signals := make([]signalRef, 0, len(normalized))
+	for _, code := range normalized {
+		for signalDate := range c.signalDates[code] {
+			signals = append(signals, signalRef{
+				Code:       code,
+				SignalDate: signalDate,
+			})
+		}
+	}
+	return signals
 }
 
 func newMemoryLimiter(limit int, window time.Duration) *memoryLimiter {
@@ -471,11 +539,17 @@ func splitCodes(raw string) []string {
 	if raw == "" {
 		return nil
 	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
+	return normalizeCodes(strings.Split(raw, ","))
+}
+
+func normalizeCodes(codes []string) []string {
+	if len(codes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(codes))
 	seen := make(map[string]struct{})
-	for _, part := range parts {
-		code := strings.TrimSpace(part)
+	for _, raw := range codes {
+		code := strings.TrimSpace(raw)
 		if !codePattern.MatchString(code) {
 			continue
 		}
@@ -486,6 +560,125 @@ func splitCodes(raw string) []string {
 		out = append(out, code)
 	}
 	return out
+}
+
+func normalizeSignalRefs(signals []signalRef) []signalRef {
+	if len(signals) == 0 {
+		return nil
+	}
+	out := make([]signalRef, 0, len(signals))
+	seen := make(map[string]struct{})
+	for _, raw := range signals {
+		code := strings.TrimSpace(raw.Code)
+		signalDate := strings.TrimSpace(raw.SignalDate)
+		if !codePattern.MatchString(code) || signalDate == "" {
+			continue
+		}
+		key := code + "\x00" + signalDate
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, signalRef{
+			Code:       code,
+			SignalDate: signalDate,
+		})
+	}
+	return out
+}
+
+func migrateLegacyTables(db *sql.DB) error {
+	if err := migrateTableIfNeeded(
+		db,
+		"stock_feedback_votes",
+		[]string{"code", "signal_date", "device_id", "vote", "created_at", "updated_at"},
+		[]string{
+			`ALTER TABLE stock_feedback_votes RENAME TO stock_feedback_votes_legacy;`,
+			`CREATE TABLE stock_feedback_votes (
+				code TEXT NOT NULL,
+				signal_date TEXT NOT NULL,
+				device_id TEXT NOT NULL,
+				vote TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (code, signal_date, device_id)
+			);`,
+			`INSERT INTO stock_feedback_votes(code, signal_date, device_id, vote, created_at, updated_at)
+			 SELECT code, '', device_id, vote, created_at, updated_at FROM stock_feedback_votes_legacy;`,
+			`DROP TABLE stock_feedback_votes_legacy;`,
+		},
+	); err != nil {
+		return err
+	}
+
+	return migrateTableIfNeeded(
+		db,
+		"stock_feedback_summary",
+		[]string{"code", "signal_date", "up_count", "down_count", "score", "updated_at"},
+		[]string{
+			`ALTER TABLE stock_feedback_summary RENAME TO stock_feedback_summary_legacy;`,
+			`CREATE TABLE stock_feedback_summary (
+				code TEXT NOT NULL,
+				signal_date TEXT NOT NULL,
+				up_count INTEGER NOT NULL DEFAULT 0,
+				down_count INTEGER NOT NULL DEFAULT 0,
+				score INTEGER NOT NULL DEFAULT 0,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (code, signal_date)
+			);`,
+			`INSERT INTO stock_feedback_summary(code, signal_date, up_count, down_count, score, updated_at)
+			 SELECT code, '', up_count, down_count, score, updated_at FROM stock_feedback_summary_legacy;`,
+			`DROP TABLE stock_feedback_summary_legacy;`,
+		},
+	)
+}
+
+func migrateTableIfNeeded(db *sql.DB, table string, requiredColumns []string, migration []string) error {
+	columns, err := tableColumns(db, table)
+	if err != nil {
+		return err
+	}
+	if hasAllColumns(columns, requiredColumns) {
+		return nil
+	}
+	for _, stmt := range migration {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		columns[name] = struct{}{}
+	}
+	return columns, rows.Err()
+}
+
+func hasAllColumns(columns map[string]struct{}, required []string) bool {
+	for _, column := range required {
+		if _, ok := columns[column]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *app) clientIP(r *http.Request) string {
