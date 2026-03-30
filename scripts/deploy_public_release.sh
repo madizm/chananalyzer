@@ -7,7 +7,7 @@ RELEASE_DIR="$ROOT_DIR/dist/release"
 NGINX_EXAMPLE="$ROOT_DIR/deploy/nginx/chanalyzer-public.conf.example"
 SYSTEMD_EXAMPLE="$ROOT_DIR/deploy/systemd/feedback-service.service.example"
 
-REMOTE_HOST="${REMOTE_HOST:-}"
+REMOTE_HOST="${REMOTE_HOST:-117.50.199.81}"
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_BASE_DIR="${REMOTE_BASE_DIR:-/srv/chananalyzer}"
 REMOTE_SITE_DIR="$REMOTE_BASE_DIR/site"

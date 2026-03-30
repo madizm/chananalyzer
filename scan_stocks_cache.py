@@ -512,7 +512,8 @@ def analyze_stock(
             # 直接根据类型判断，不依赖 is_buy 属性（因为 is_buy 有时与 type 不一致）
             # 买入类型: 1, 1p, 2, 3a, 3b
             # 卖出类型: 1s, 2s, 3a, 3b（注意：卖出也有3a/3b）
-            if bsp_type in buy_types:
+            # todo: 待确认is_buy的正确性
+            if bsp.is_buy and bsp_type in buy_types:
                 matched_signals.append(
                     {
                         "type": bsp_type,
@@ -925,7 +926,7 @@ def main():
     parser.add_argument(
         "--buy",
         nargs="+",
-        default=["2", "3a", "3b"],
+        default=["1", "1p", "2", "3a", "3b"],
         help="筛选买入类型 (默认: 2 3a 3b)",
     )
     parser.add_argument("--sell", nargs="+", default=[], help="筛选卖出类型")

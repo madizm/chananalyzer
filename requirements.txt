@@ -44,3 +44,4 @@ tqdm>=4.65.0  # 进度条
 # GUI 可视化
 matplotlib>=3.7.0
 PyQt6>=6.6.0
+ipython>=8.5.0

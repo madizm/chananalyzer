@@ -8,7 +8,7 @@ K线数据更新脚本
     python -m scripts.update_data --codes 000001 000002
 
     # 更新所有已缓存的股票
-    python -m scripts.update_data --all
+    python -m scripts.update_data --all --data-source baostock
 
     # 使用 BaoStock 更新
     python -m scripts.update_data --codes 000001 --data-source baostock

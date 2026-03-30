@@ -3,6 +3,7 @@ K线数据管理器
 
 负责 K 线数据的缓存、增量更新和合并。
 """
+
 import os
 from datetime import datetime, timedelta
 from typing import Iterable, Optional, List
@@ -14,8 +15,11 @@ from Common.CEnum import KL_TYPE, AUTYPE, DATA_FIELD
 from Common.CTime import CTime
 from KLine.KLine_Unit import CKLine_Unit
 from ChanAnalyzer.database import (
-    KLineData, get_db, init_db,
-    get_kl_type_str, parse_kl_type_str
+    KLineData,
+    get_db,
+    init_db,
+    get_kl_type_str,
+    parse_kl_type_str,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,7 +55,7 @@ class DataManager:
         kl_type: KL_TYPE,
         begin_date: str,
         end_date: str,
-        data_src_fetcher: callable = None
+        data_src_fetcher: callable = None,
     ) -> Iterable[CKLine_Unit]:
         """
         获取 K 线数据（优先从缓存）
@@ -85,7 +89,9 @@ class DataManager:
         last_date = self._get_last_date(cached_data)
         fetch_start = last_date if last_date else begin_date
 
-        logger.info(f"[{code} {kl_type_str}] 从 API 获取数据: {fetch_start} ~ {end_date}")
+        logger.info(
+            f"[{code} {kl_type_str}] 从 API 获取数据: {fetch_start} ~ {end_date}"
+        )
         new_data_list = list(data_src_fetcher(code, kl_type, fetch_start, end_date))
 
         if not new_data_list:
@@ -97,19 +103,13 @@ class DataManager:
 
         # 4. 合并数据
         new_cached_data = self._merge_and_save(
-            code, kl_type_str,
-            cached_data, new_data_list,
-            begin_date, end_date
+            code, kl_type_str, cached_data, new_data_list, begin_date, end_date
         )
 
         return self._to_klu_list(new_cached_data)
 
     def _get_from_cache(
-        self,
-        code: str,
-        kl_type_str: str,
-        begin_date: str,
-        end_date: str
+        self, code: str, kl_type_str: str, begin_date: str, end_date: str
     ) -> List[KLineData]:
         """从缓存获取数据"""
         with get_db() as db:
@@ -120,9 +120,15 @@ class DataManager:
 
             # 添加日期范围过滤
             if begin_date:
-                begin_dt = datetime.fromisoformat(begin_date.replace('-', '').replace(
-                    lambda x: x[0]+'-'+x[1:3]+'-'+x[3:5] if len(x) == 8 else x
-                ) if '-' not in begin_date else begin_date)
+                begin_dt = datetime.fromisoformat(
+                    begin_date.replace("-", "").replace(
+                        lambda x: (
+                            x[0] + "-" + x[1:3] + "-" + x[3:5] if len(x) == 8 else x
+                        )
+                    )
+                    if "-" not in begin_date
+                    else begin_date
+                )
                 # 简化处理：这里假设输入是 YYYY-MM-DD 或 YYYYMMDD 格式
                 # 实际使用时可以优化
             if end_date:
@@ -151,7 +157,12 @@ class DataManager:
 
         last_row = cached_data[-1]
         last_date = last_row.timestamp.date()
+        request_end = datetime.fromisoformat(request_end_date).date()
         today = datetime.now().date()
+
+        # 如果缓存还没覆盖到请求的结束日期，不能直接复用缓存。
+        if last_date < request_end:
+            return False
 
         # 如果缓存最新数据是今天
         if last_date == today:
@@ -201,7 +212,7 @@ class DataManager:
         cached_data: List[KLineData],
         new_klu_list: List[CKLine_Unit],
         begin_date: str,
-        end_date: str
+        end_date: str,
     ) -> List[KLineData]:
         """
         合并数据并保存到缓存
@@ -226,7 +237,7 @@ class DataManager:
                 db.query(KLineData).filter(
                     KLineData.code == code,
                     KLineData.kl_type == kl_type_str,
-                    KLineData.date.in_(new_dates)
+                    KLineData.date.in_(new_dates),
                 ).delete(synchronize_session=False)
 
             # 批量插入
@@ -236,10 +247,15 @@ class DataManager:
             logger.info(f"[{code} {kl_type_str}] 缓存更新: 新增 {len(new_rows)} 条")
 
             # 返回合并后的数据
-            return db.query(KLineData).filter(
-                KLineData.code == code,
-                KLineData.kl_type == kl_type_str,
-            ).order_by(KLineData.timestamp).all()
+            return (
+                db.query(KLineData)
+                .filter(
+                    KLineData.code == code,
+                    KLineData.kl_type == kl_type_str,
+                )
+                .order_by(KLineData.timestamp)
+                .all()
+            )
 
     def _to_klu_list(self, kline_data_list: List[KLineData]) -> Iterable[CKLine_Unit]:
         """将 KLineData 列表转换为 CKLine_Unit 迭代器"""
@@ -250,7 +266,7 @@ class DataManager:
                     row.timestamp.month,
                     row.timestamp.day,
                     row.timestamp.hour,
-                    row.timestamp.minute
+                    row.timestamp.minute,
                 ),
                 DATA_FIELD.FIELD_OPEN: row.open,
                 DATA_FIELD.FIELD_HIGH: row.high,
@@ -271,23 +287,28 @@ class DataManager:
         """获取缓存信息"""
         kl_type_str = get_kl_type_str(kl_type)
         with get_db() as db:
-            count = db.query(KLineData).filter(
-                KLineData.code == code,
-                KLineData.kl_type == kl_type_str
-            ).count()
+            count = (
+                db.query(KLineData)
+                .filter(KLineData.code == code, KLineData.kl_type == kl_type_str)
+                .count()
+            )
 
             if count == 0:
                 return {"exists": False}
 
-            first = db.query(KLineData).filter(
-                KLineData.code == code,
-                KLineData.kl_type == kl_type_str
-            ).order_by(KLineData.timestamp).first()
+            first = (
+                db.query(KLineData)
+                .filter(KLineData.code == code, KLineData.kl_type == kl_type_str)
+                .order_by(KLineData.timestamp)
+                .first()
+            )
 
-            last = db.query(KLineData).filter(
-                KLineData.code == code,
-                KLineData.kl_type == kl_type_str
-            ).order_by(KLineData.timestamp.desc()).first()
+            last = (
+                db.query(KLineData)
+                .filter(KLineData.code == code, KLineData.kl_type == kl_type_str)
+                .order_by(KLineData.timestamp.desc())
+                .first()
+            )
 
             return {
                 "exists": True,
@@ -296,7 +317,9 @@ class DataManager:
                 "last_date": last.date if last else None,
             }
 
-    def clear_cache(self, code: Optional[str] = None, kl_type: Optional[KL_TYPE] = None):
+    def clear_cache(
+        self, code: Optional[str] = None, kl_type: Optional[KL_TYPE] = None
+    ):
         """清除缓存"""
         with get_db() as db:
             query = db.query(KLineData)
