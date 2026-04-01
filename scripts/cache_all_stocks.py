@@ -9,7 +9,10 @@
     python -m scripts.cache_all_stocks --all
 
     # 使用 BaoStock 缓存
-    python -m scripts.cache_all_stocks --all --data-source baostock
+    python -m scripts.cache_all_stocks --all --data-source baostock --kl-types 30M
+
+    # 缓存日线 + 30分钟
+    python -m scripts.cache_all_stocks --codes 000001 --data-source baostock --kl-types DAY 30M
 
     # 限制数量（测试用）
     python -m scripts.cache_all_stocks --all --limit 100
@@ -233,14 +236,14 @@ def main():
     parser.add_argument('--codes', nargs='+', help='指定股票代码')
     parser.add_argument('--all', action='store_true', help='缓存所有 A 股')
     parser.add_argument('--limit', type=int, help='限制数量')
-    parser.add_argument('--begin', default='2023-01-01', help='开始日期')
+    parser.add_argument('--begin', default='2026-03-20', help='开始日期')
     parser.add_argument('--end', default=None, help='结束日期（默认今天）')
     parser.add_argument('--delay', type=float, default=0.3, help='每只股票之间的延迟秒数（默认0.3秒，避免触发频次限制）')
     parser.add_argument('--data-source', default='tushare', choices=['tushare', 'baostock'],
                        help='数据源 (默认: tushare)')
     parser.add_argument('--kl-types', nargs='+', default=['DAY', 'WEEK'],
-                       choices=['DAY', 'WEEK', 'MON'],
-                       help='K线周期类型 (默认: DAY WEEK，只选日线请用 --kl-types DAY)')
+                       choices=['DAY', 'WEEK', 'MON', '30M'],
+                       help='K线周期类型 (默认: DAY WEEK，可选增加 30M)')
 
     args = parser.parse_args()
 
@@ -252,6 +255,7 @@ def main():
         'DAY': KL_TYPE.K_DAY,
         'WEEK': KL_TYPE.K_WEEK,
         'MON': KL_TYPE.K_MON,
+        '30M': KL_TYPE.K_30M,
     }
     kl_types = [kl_type_map[t] for t in args.kl_types]
 

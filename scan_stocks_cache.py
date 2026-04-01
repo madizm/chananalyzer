@@ -56,6 +56,39 @@ from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
 DB_PATH = os.path.join(os.path.dirname(__file__), "chan.db")
 AMOUNT_YI_UNIT = 100000000
 
+KL_LEVEL_MAP = {
+    "1M": KL_TYPE.K_1M,
+    "5M": KL_TYPE.K_5M,
+    "15M": KL_TYPE.K_15M,
+    "30M": KL_TYPE.K_30M,
+    "60M": KL_TYPE.K_60M,
+    "DAY": KL_TYPE.K_DAY,
+    "WEEK": KL_TYPE.K_WEEK,
+    "MON": KL_TYPE.K_MON,
+}
+
+KL_LEVEL_RANK = {
+    KL_TYPE.K_1M: 1,
+    KL_TYPE.K_5M: 3,
+    KL_TYPE.K_15M: 4,
+    KL_TYPE.K_30M: 5,
+    KL_TYPE.K_60M: 6,
+    KL_TYPE.K_DAY: 7,
+    KL_TYPE.K_WEEK: 8,
+    KL_TYPE.K_MON: 9,
+}
+
+KL_LEVEL_LABEL = {
+    KL_TYPE.K_1M: "1分钟",
+    KL_TYPE.K_5M: "5分钟",
+    KL_TYPE.K_15M: "15分钟",
+    KL_TYPE.K_30M: "30分钟",
+    KL_TYPE.K_60M: "60分钟",
+    KL_TYPE.K_DAY: "日线",
+    KL_TYPE.K_WEEK: "周线",
+    KL_TYPE.K_MON: "月线",
+}
+
 # 移除缓存，直接从数据库查询
 
 
@@ -453,6 +486,67 @@ def filter_stocks_by_trade_metrics(
     return result
 
 
+def _get_higher_level_state(
+    chan: CChan,
+    level_idx: int,
+    state_rule: str = "up_or_above_zs",
+) -> Dict[str, Any]:
+    """
+    提取上级别结构状态，用于联立过滤。
+
+    规则：
+    - 上涨段：优先使用 seg，若无 seg 则回退到 bi
+    - 中枢位置：对比当前价与最新中枢 high/low
+    """
+    kl_data = chan[level_idx]
+
+    is_uptrend = False
+    uptrend_source = "none"
+    if len(kl_data.seg_list) > 0:
+        is_uptrend = bool(kl_data.seg_list[-1].is_up())
+        uptrend_source = "seg"
+    elif len(kl_data.bi_list) > 0:
+        is_uptrend = bool(kl_data.bi_list[-1].is_up())
+        uptrend_source = "bi"
+
+    current_price = None
+    if len(kl_data.lst) > 0 and len(kl_data.lst[-1].lst) > 0:
+        current_price = float(kl_data.lst[-1].lst[-1].close)
+
+    zs_position = "无中枢"
+    is_above_zs = False
+    latest_zs = None
+    if len(kl_data.zs_list) > 0 and current_price is not None:
+        latest_zs = kl_data.zs_list[-1]
+        if current_price > latest_zs.high:
+            zs_position = "中枢上方（强势）"
+            is_above_zs = True
+        elif current_price < latest_zs.low:
+            zs_position = "中枢下方（弱势）"
+        else:
+            zs_position = "中枢内部"
+
+    if state_rule == "up_and_above_zs":
+        pass_state_filter = is_uptrend and is_above_zs
+    else:
+        pass_state_filter = is_uptrend or is_above_zs
+
+    reason_parts = []
+    reason_parts.append(f"uptrend={is_uptrend}({uptrend_source})")
+    reason_parts.append(f"zs_position={zs_position}")
+    reason = ", ".join(reason_parts)
+
+    return {
+        "is_uptrend": is_uptrend,
+        "uptrend_source": uptrend_source,
+        "zs_position": zs_position,
+        "is_above_zs": is_above_zs,
+        "state_rule": state_rule,
+        "pass_state_filter": pass_state_filter,
+        "reason": reason,
+    }
+
+
 def analyze_stock(
     code: str,
     buy_types: List[str],
@@ -461,6 +555,7 @@ def analyze_stock(
     end_date: str = None,
     use_weekly: bool = False,
     config: CChanConfig = None,
+    joint_config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     分析单只股票的买卖点
@@ -474,9 +569,20 @@ def analyze_stock(
         if end_date is None:
             end_date = datetime.now().strftime("%Y-%m-%d")
 
+        joint_config = joint_config or {}
+        is_joint = bool(joint_config.get("enabled", False))
+
         # 设置K线级别
-        if use_weekly:
-            lv_list = [KL_TYPE.K_DAY, KL_TYPE.K_WEEK]
+        if is_joint:
+            higher_level = joint_config["higher_level"]
+            trigger_level = joint_config["trigger_level"]
+            lv_list = sorted(
+                [higher_level, trigger_level],
+                key=lambda level: KL_LEVEL_RANK[level],
+                reverse=True,
+            )
+        elif use_weekly:
+            lv_list = [KL_TYPE.K_WEEK, KL_TYPE.K_DAY]  # 从大级别到小级别
         else:
             lv_list = [KL_TYPE.K_DAY]
 
@@ -495,57 +601,143 @@ def analyze_stock(
         if len(chan[0]) == 0:
             return None
 
-        # 获取买卖点
-        bsp_list = chan.get_latest_bsp(number=0)
+        # 筛选最近窗口内的买卖点（默认最近30天）
+        window_days = int(joint_config.get("window_days", 30) if is_joint else 30)
+        cutoff_date = datetime.now() - timedelta(days=window_days)
 
-        # 筛选最近的买卖点（最近30天）
-        cutoff_date = datetime.now() - timedelta(days=30)
-        matched_signals = []
-
-        for bsp in bsp_list:
-            bsp_date = datetime(bsp.klu.time.year, bsp.klu.time.month, bsp.klu.time.day)
-            if bsp_date < cutoff_date:
-                continue
-
-            bsp_type = bsp.type2str()
-
-            # 直接根据类型判断，不依赖 is_buy 属性（因为 is_buy 有时与 type 不一致）
-            # 买入类型: 1, 1p, 2, 3a, 3b
-            # 卖出类型: 1s, 2s, 3a, 3b（注意：卖出也有3a/3b）
-            # todo: 待确认is_buy的正确性
-            if bsp.is_buy and bsp_type in buy_types:
-                matched_signals.append(
-                    {
-                        "type": bsp_type,
-                        "direction": "买入",
-                        "date": str(bsp.klu.time),
-                        "price": float(bsp.klu.close),
-                        "period": "周线" if use_weekly else "日线",
-                    }
+        def collect_level_signals(
+            level_idx: int,
+            period_label: str,
+            matched_buy_types: Optional[List[str]] = None,
+            matched_sell_types: Optional[List[str]] = None,
+        ) -> List[Dict[str, Any]]:
+            signals = []
+            bsp_list = chan[level_idx].bs_point_lst.get_latest_bsp(0)
+            for bsp in bsp_list:
+                bsp_date = datetime(
+                    bsp.klu.time.year, bsp.klu.time.month, bsp.klu.time.day
                 )
-            elif bsp_type in sell_types:
-                matched_signals.append(
-                    {
-                        "type": bsp_type,
-                        "direction": "卖出",
-                        "date": str(bsp.klu.time),
-                        "price": float(bsp.klu.close),
-                        "period": "周线" if use_weekly else "日线",
-                    }
-                )
+                if bsp_date < cutoff_date:
+                    continue
 
-        if not matched_signals:
-            return None
+                bsp_type = bsp.type2str()
+
+                if matched_buy_types and bsp.is_buy and bsp_type in matched_buy_types:
+                    signals.append(
+                        {
+                            "type": bsp_type,
+                            "direction": "买入",
+                            "date": str(bsp.klu.time),
+                            "price": float(bsp.klu.close),
+                            "period": period_label,
+                        }
+                    )
+                elif matched_sell_types and bsp_type in matched_sell_types:
+                    signals.append(
+                        {
+                            "type": bsp_type,
+                            "direction": "卖出",
+                            "date": str(bsp.klu.time),
+                            "price": float(bsp.klu.close),
+                            "period": period_label,
+                        }
+                    )
+            return signals
+
+        if is_joint:
+            higher_level = joint_config["higher_level"]
+            trigger_level = joint_config["trigger_level"]
+            higher_filter_mode = joint_config.get("higher_filter_mode", "state")
+            higher_state_rule = joint_config.get(
+                "higher_state_rule", "up_or_above_zs"
+            )
+            higher_buy_types = joint_config.get(
+                "higher_buy_types", ["1", "1p", "2", "3a", "3b"]
+            )
+            trigger_buy_types = joint_config.get("trigger_buy_types", buy_types)
+
+            higher_idx = lv_list.index(higher_level)
+            trigger_idx = lv_list.index(trigger_level)
+
+            higher_state = _get_higher_level_state(
+                chan=chan,
+                level_idx=higher_idx,
+                state_rule=higher_state_rule,
+            )
+            state_pass = bool(higher_state["pass_state_filter"])
+            higher_signals: List[Dict[str, Any]] = []
+            window_pass = True
+
+            if higher_filter_mode in ("window", "hybrid"):
+                higher_signals = collect_level_signals(
+                    level_idx=higher_idx,
+                    period_label=KL_LEVEL_LABEL[higher_level],
+                    matched_buy_types=higher_buy_types,
+                )
+                window_pass = bool(higher_signals)
+
+            trigger_signals = collect_level_signals(
+                level_idx=trigger_idx,
+                period_label=KL_LEVEL_LABEL[trigger_level],
+                matched_buy_types=trigger_buy_types,
+            )
+
+            if higher_filter_mode == "window":
+                higher_pass = window_pass
+                higher_pass_reason = "window_pass" if higher_pass else "window_not_pass"
+            elif higher_filter_mode == "hybrid":
+                higher_pass = state_pass and window_pass
+                higher_pass_reason = (
+                    "state_and_window_pass"
+                    if higher_pass
+                    else "state_or_window_not_pass"
+                )
+            else:
+                higher_pass = state_pass
+                higher_pass_reason = "state_pass" if higher_pass else "state_not_pass"
+
+            if not higher_pass or not trigger_signals:
+                return None
+
+            matched_signals = trigger_signals
+        else:
+            level_idx = 0
+            period_label = "周线" if use_weekly else "日线"
+            matched_signals = collect_level_signals(
+                level_idx=level_idx,
+                period_label=period_label,
+                matched_buy_types=buy_types,
+                matched_sell_types=sell_types,
+            )
+            if not matched_signals:
+                return None
 
         # 获取最新价格信息
         price_info = get_latest_price_from_db(code)
 
-        return {
+        result = {
             "code": code,
             "signals": matched_signals,
             "latest_price": price_info["latest_price"] if price_info else None,
             "change_pct": price_info["change_pct"] if price_info else None,
         }
+        if is_joint:
+            if higher_filter_mode in ("window", "hybrid"):
+                result["higher_signals"] = higher_signals
+            result["trigger_signals"] = trigger_signals
+            result["higher_state"] = higher_state
+            result["joint"] = {
+                "higher_level": KL_LEVEL_LABEL[higher_level],
+                "trigger_level": KL_LEVEL_LABEL[trigger_level],
+                "higher_filter_mode": higher_filter_mode,
+                "higher_state_rule": higher_state_rule,
+                "higher_filter_pass": higher_pass,
+                "higher_filter_reason": higher_pass_reason,
+                "window_days": window_days,
+                "higher_buy_types": higher_buy_types,
+                "trigger_buy_types": trigger_buy_types,
+            }
+        return result
 
     except Exception:
         return None
@@ -558,6 +750,7 @@ def scan_stocks(
     begin_date: str = None,
     end_date: str = None,
     use_weekly: bool = False,
+    joint_config: Optional[Dict[str, Any]] = None,
     bi_strict: bool = True,
     show_money_flow: bool = False,
     sort_by_money_flow: bool = False,
@@ -574,7 +767,10 @@ def scan_stocks(
         sell_types: 卖点类型列表
         begin_date: 开始日期
         end_date: 结束日期
-        use_weekly: 是否使用周线
+        use_weekly: 是否使用周线（联立模式关闭时生效）
+        joint_config: 联立配置，None 或
+            {"enabled": bool, "higher_filter_mode": "state|window|hybrid",
+             "higher_state_rule": "up_or_above_zs|up_and_above_zs", ...}
         bi_strict: 是否严格笔模式
         show_money_flow: 是否显示资金流向
         sort_by_money_flow: 是否按资金流向排序
@@ -586,6 +782,8 @@ def scan_stocks(
         buy_types = ["2", "3a", "3b"]
     if sell_types is None:
         sell_types = []
+    if joint_config is None:
+        joint_config = {"enabled": False}
 
     # 配置缠论参数
     config = CChanConfig(
@@ -622,6 +820,7 @@ def scan_stocks(
             end_date=end_date,
             use_weekly=use_weekly,
             config=config,
+            joint_config=joint_config,
         )
 
         if result:
@@ -721,6 +920,24 @@ def _print_list_view(
             print(
                 f"    - {sig['period']} {sig['direction']} {sig['type']}类: {sig['date']} @ {sig['price']:.2f}"
             )
+        if stock.get("higher_state"):
+            hs = stock["higher_state"]
+            print("  上级结构状态:")
+            print(
+                f"    - 上涨段: {hs.get('is_uptrend')} ({hs.get('uptrend_source')})"
+            )
+            print(
+                f"    - 中枢位置: {hs.get('zs_position')}"
+            )
+            print(
+                f"    - 状态过滤通过: {hs.get('pass_state_filter')} ({hs.get('state_rule')})"
+            )
+        if stock.get("higher_signals"):
+            print("  上级过滤信号:")
+            for sig in stock["higher_signals"]:
+                print(
+                    f"    - {sig['period']} {sig['direction']} {sig['type']}类: {sig['date']} @ {sig['price']:.2f}"
+                )
 
 
 def _print_grouped_view(
@@ -889,6 +1106,22 @@ def save_results(
                 f.write(
                     f"    - {sig['period']} {sig['direction']} {sig['type']}类: {sig['date']} @ {sig['price']:.2f}\n"
                 )
+            if stock.get("higher_state"):
+                hs = stock["higher_state"]
+                f.write("  上级结构状态:\n")
+                f.write(
+                    f"    - 上涨段: {hs.get('is_uptrend')} ({hs.get('uptrend_source')})\n"
+                )
+                f.write(f"    - 中枢位置: {hs.get('zs_position')}\n")
+                f.write(
+                    f"    - 状态过滤通过: {hs.get('pass_state_filter')} ({hs.get('state_rule')})\n"
+                )
+            if stock.get("higher_signals"):
+                f.write("  上级过滤信号:\n")
+                for sig in stock["higher_signals"]:
+                    f.write(
+                        f"    - {sig['period']} {sig['direction']} {sig['type']}类: {sig['date']} @ {sig['price']:.2f}\n"
+                    )
             f.write("\n")
 
     print(f"\n结果已保存到: {filename}")
@@ -933,6 +1166,49 @@ def main():
     parser.add_argument("--begin", help="开始日期")
     parser.add_argument("--end", help="结束日期")
     parser.add_argument("--weekly", action="store_true", help="使用周线分析")
+    parser.add_argument("--joint", action="store_true", help="启用多级别联立买点（上级过滤+下级触发）")
+    parser.add_argument(
+        "--higher-level",
+        default="DAY",
+        choices=list(KL_LEVEL_MAP.keys()),
+        help="联立上级别 (默认: DAY)",
+    )
+    parser.add_argument(
+        "--trigger-level",
+        default="30M",
+        choices=list(KL_LEVEL_MAP.keys()),
+        help="联立触发级别 (默认: 30M)",
+    )
+    parser.add_argument(
+        "--higher-buy",
+        nargs="+",
+        default=["1", "1p", "2", "3a", "3b"],
+        help="上级过滤买点类型 (默认: 1 1p 2 3a 3b)",
+    )
+    parser.add_argument(
+        "--trigger-buy",
+        nargs="+",
+        default=None,
+        help="触发级别买点类型 (默认沿用 --buy)",
+    )
+    parser.add_argument(
+        "--window-days",
+        type=int,
+        default=30,
+        help="联立判定窗口天数（自然日，默认: 30）",
+    )
+    parser.add_argument(
+        "--higher-filter-mode",
+        default="state",
+        choices=["state", "window", "hybrid"],
+        help="上级过滤模式: state(结构状态)/window(窗口买点)/hybrid(两者都需满足)",
+    )
+    parser.add_argument(
+        "--higher-state-rule",
+        default="up_or_above_zs",
+        choices=["up_or_above_zs", "up_and_above_zs"],
+        help="结构状态规则: up_or_above_zs(上涨段或中枢上方) / up_and_above_zs(上涨段且中枢上方)",
+    )
     parser.add_argument("--no-strict", action="store_true", help="关闭笔严格模式")
     parser.add_argument("--output", help="保存结果到文件")
 
@@ -1037,12 +1313,43 @@ def main():
         print("\n没有可扫描的股票")
         return
 
+    joint_config = {"enabled": False}
+    if args.joint:
+        higher_level = KL_LEVEL_MAP[args.higher_level]
+        trigger_level = KL_LEVEL_MAP[args.trigger_level]
+        if higher_level == trigger_level:
+            raise ValueError("联立模式下 higher-level 与 trigger-level 不能相同")
+        if KL_LEVEL_RANK[higher_level] <= KL_LEVEL_RANK[trigger_level]:
+            raise ValueError("联立模式要求 higher-level 必须大于 trigger-level")
+        trigger_buy_types = args.trigger_buy if args.trigger_buy else args.buy
+        joint_config = {
+            "enabled": True,
+            "higher_level": higher_level,
+            "trigger_level": trigger_level,
+            "higher_buy_types": args.higher_buy,
+            "trigger_buy_types": trigger_buy_types,
+            "window_days": args.window_days,
+            "higher_filter_mode": args.higher_filter_mode,
+            "higher_state_rule": args.higher_state_rule,
+        }
+
     # 开始扫描
     print(f"\n开始扫描...")
     print(f"筛选买入类型: {args.buy}")
     if args.sell:
         print(f"筛选卖出类型: {args.sell}")
-    print(f"周期: {'周线' if args.weekly else '日线'}")
+    if args.joint:
+        print(
+            f"联立模式: 开启 ({args.higher_level} 过滤 + {args.trigger_level} 触发, "
+            f"窗口 {args.window_days} 天)"
+        )
+        print(f"上级过滤模式: {args.higher_filter_mode}")
+        if args.higher_filter_mode in ("state", "hybrid"):
+            print(f"结构状态规则: {args.higher_state_rule}")
+        print(f"上级过滤买点: {args.higher_buy}")
+        print(f"触发级别买点: {joint_config['trigger_buy_types']}")
+    else:
+        print(f"周期: {'周线' if args.weekly else '日线'}")
     print(f"笔严格模式: {not args.no_strict}")
 
     started_at = datetime.now()
@@ -1053,6 +1360,7 @@ def main():
         begin_date=args.begin,
         end_date=args.end,
         use_weekly=args.weekly,
+        joint_config=joint_config,
         bi_strict=not args.no_strict,
         show_money_flow=args.show_money_flow,
         sort_by_money_flow=args.sort_by_money_flow,
@@ -1079,6 +1387,14 @@ def main():
                 "begin": args.begin,
                 "end": args.end,
                 "weekly": args.weekly,
+                "joint": args.joint,
+                "higher_level": args.higher_level,
+                "trigger_level": args.trigger_level,
+                "higher_buy": args.higher_buy,
+                "trigger_buy": joint_config.get("trigger_buy_types", []),
+                "window_days": args.window_days,
+                "higher_filter_mode": args.higher_filter_mode,
+                "higher_state_rule": args.higher_state_rule,
                 "bi_strict": not args.no_strict,
                 "industry": args.industry,
                 "area": args.area,
