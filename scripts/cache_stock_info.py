@@ -8,7 +8,6 @@ import argparse
 import os
 import sqlite3
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
 
 # 添加项目路径
@@ -54,6 +53,11 @@ def _patched_pro_api(token=None):
 ts.set_token = _patched_set_token
 ts.pro_api = _patched_pro_api
 # ==================== 修复结束 ====================
+
+from scripts.baostock_utils import (
+    get_a_share_stock_rows,
+    get_effective_baostock_trade_date,
+)
 
 
 def get_tushare_token():
@@ -123,31 +127,6 @@ def fetch_stock_info_from_tushare():
         return []
 
 
-def get_latest_baostock_trade_date(lookback_days: int = 30) -> str:
-    """获取 BaoStock 最近一个交易日，避免周末或节假日返回空列表。"""
-    import baostock as bs
-
-    end_day = datetime.now().date()
-    start_day = end_day - timedelta(days=lookback_days)
-    rs = bs.query_trade_dates(
-        start_date=start_day.strftime("%Y-%m-%d"),
-        end_date=end_day.strftime("%Y-%m-%d"),
-    )
-    if rs.error_code != "0":
-        raise ValueError(f"BaoStock 获取交易日失败: {rs.error_msg}")
-
-    latest_trade_date = None
-    while rs.error_code == "0" and rs.next():
-        trade_date, is_trading_day = rs.get_row_data()
-        if is_trading_day == "1":
-            latest_trade_date = trade_date
-
-    if not latest_trade_date:
-        raise ValueError("BaoStock 未返回最近交易日")
-
-    return latest_trade_date
-
-
 def fetch_stock_info_from_baostock():
     """从 BaoStock 获取所有股票基本信息。"""
     import baostock as bs
@@ -160,22 +139,16 @@ def fetch_stock_info_from_baostock():
         return []
 
     try:
-        query_day = get_latest_baostock_trade_date()
-
-        rs = bs.query_all_stock(day=query_day)
-        if rs.error_code != "0":
-            print(f"BaoStock 获取股票列表失败: {rs.error_msg}")
-            return []
-
-        all_stock_df = rs.get_data()
-        if all_stock_df is None or all_stock_df.empty:
+        query_day = get_effective_baostock_trade_date(log_fn=print)
+        all_stock_rows = get_a_share_stock_rows(query_day)
+        if not all_stock_rows:
             print("BaoStock 未返回股票列表数据")
             return []
 
         stock_info_map = {}
-        for _, row in all_stock_df.iterrows():
-            code = str(row.get("code", "") or "")
-            name = str(row.get("code_name", row.get("name", "")) or "")
+        for row in all_stock_rows:
+            code = str(row[0] if len(row) > 0 else "")
+            name = str(row[1] if len(row) > 1 else "")
             if not code or "." not in code:
                 continue
 

@@ -8,7 +8,7 @@ K线数据更新脚本
     python -m scripts.update_data --codes 000001 000002
 
     # 更新所有已缓存的股票
-    python -m scripts.update_data --all --data-source baostock
+    python -m scripts.update_data --all --data-source baostock --kl-types DAY
 
     # 使用 BaoStock 更新
     python -m scripts.update_data --codes 000001 --data-source baostock
@@ -19,6 +19,7 @@ K线数据更新脚本
     # 清除缓存后重新获取
     python -m scripts.update_data --codes 000001 --refresh
 """
+
 import argparse
 import logging
 import os
@@ -28,7 +29,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 # ==================== 修复 tushare 权限问题 ====================
 # 强制使用 /tmp 目录存储 token，避免云服务器权限问题
-os.environ['TUSHARE_PATH'] = '/tmp'
+os.environ["TUSHARE_PATH"] = "/tmp"
 
 # Monkey patch tushare，在导入时立即生效
 import pandas as pd
@@ -38,29 +39,32 @@ import tushare as ts
 _original_set_token = ts.set_token
 _original_pro_api = ts.pro_api
 
+
 def _patched_set_token(token):
     """修复后的 set_token，使用 /tmp 目录"""
-    fp = '/tmp/tk.csv'
+    fp = "/tmp/tk.csv"
     # 先删除旧文件避免权限冲突
     if os.path.exists(fp):
         try:
             os.remove(fp)
         except:
             pass
-    df = pd.DataFrame({'token': [token]})
+    df = pd.DataFrame({"token": [token]})
     df.to_csv(fp, index=False)
     ts._Tushare__token = token
+
 
 def _patched_pro_api(token=None):
     """修复后的 pro_api，从 /tmp 读取 token"""
     if token:
         return _original_pro_api(token=token)
-    fp = '/tmp/tk.csv'
+    fp = "/tmp/tk.csv"
     if os.path.exists(fp):
         df = pd.read_csv(fp)
-        token = df['token'][0]
+        token = df["token"][0]
         return _original_pro_api(token=token)
     return _original_pro_api()
+
 
 # 应用 patch
 ts.set_token = _patched_set_token
@@ -69,6 +73,7 @@ ts.pro_api = _patched_pro_api
 
 try:
     from tqdm import tqdm
+
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
@@ -84,11 +89,11 @@ from ChanAnalyzer.database import get_db, init_db, KLineData, get_kl_type_str
 from ChanAnalyzer.data_manager import DataManager
 from DataAPI.BaoStockAPI import CBaoStock
 from DataAPI.TushareAPI import CTushareAPI
+from scripts.baostock_utils import get_effective_baostock_trade_date
 
 # 配置日志
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -200,9 +205,17 @@ def get_trading_days(start_date: str, end_date: str, data_source: str) -> List[d
 
 def get_latest_trade_date(data_source: str, lookback_days: int = 30) -> str:
     """获取最近一个交易日。"""
+    if data_source == "baostock":
+        return get_effective_baostock_trade_date(
+            lookback_days=max(lookback_days, 90),
+            log_fn=_log,
+        )
+
     end_day = datetime.now().date()
     start_day = end_day - timedelta(days=lookback_days)
-    trading_days = get_trading_days(format_date(start_day), format_date(end_day), data_source)
+    trading_days = get_trading_days(
+        format_date(start_day), format_date(end_day), data_source
+    )
     if not trading_days:
         raise ValueError("未获取到最近交易日")
     return format_date(trading_days[-1])
@@ -284,10 +297,14 @@ def backfill_missing_ranges(
     kl_type_str = get_kl_type_str(kl_type)
 
     for begin_date, end_date in missing_ranges:
-        cached_data = data_manager._get_from_cache(code, kl_type_str, begin_date, end_date)
+        cached_data = data_manager._get_from_cache(
+            code, kl_type_str, begin_date, end_date
+        )
         new_data_list = list(fetcher(code, kl_type, begin_date, end_date))
         if not new_data_list:
-            logger.warning(f"[{code} {kl_type_str}] 缺失区间无返回数据: {begin_date} ~ {end_date}")
+            logger.warning(
+                f"[{code} {kl_type_str}] 缺失区间无返回数据: {begin_date} ~ {end_date}"
+            )
             continue
         data_manager._merge_and_save(
             code,
@@ -302,7 +319,9 @@ def backfill_missing_ranges(
     return total_rows
 
 
-def get_codes_with_missing_day_data(data_source: str) -> Tuple[List[str], Dict[str, Dict[str, object]]]:
+def get_codes_with_missing_day_data(
+    data_source: str,
+) -> Tuple[List[str], Dict[str, Dict[str, object]]]:
     """找出已缓存且存在日线缺口的股票。"""
     codes = get_cached_stock_codes(KL_TYPE.K_DAY)
     if not codes:
@@ -323,9 +342,13 @@ def get_codes_with_missing_day_data(data_source: str) -> Tuple[List[str], Dict[s
     if not earliest_dates:
         return [], {}
 
-    trading_days = get_trading_days(format_date(min(earliest_dates)), latest_trade_date, data_source)
+    trading_days = get_trading_days(
+        format_date(min(earliest_dates)), latest_trade_date, data_source
+    )
     for code, cached_dates in cached_dates_map.items():
-        missing_ranges, missing_days = find_missing_day_ranges(cached_dates, trading_days)
+        missing_ranges, missing_days = find_missing_day_ranges(
+            cached_dates, trading_days
+        )
         if missing_days == 0:
             continue
         missing_info[code] = {
@@ -357,7 +380,7 @@ def update_stock(
         "data_source": data_source,
         "success": True,
         "kl_types": {},
-        "error": None
+        "error": None,
     }
     fetcher = build_fetcher(code, data_source)
 
@@ -381,7 +404,9 @@ def update_stock(
 
             if only_missing and not refresh and kl_type == KL_TYPE.K_DAY:
                 if precomputed_missing and code in precomputed_missing:
-                    missing_ranges = list(precomputed_missing[code].get("missing_ranges", []))
+                    missing_ranges = list(
+                        precomputed_missing[code].get("missing_ranges", [])
+                    )
                     missing_days = int(precomputed_missing[code].get("missing_days", 0))
                 else:
                     cached_dates = get_cached_day_dates(code)
@@ -392,7 +417,9 @@ def update_stock(
                             latest_trade_date,
                             data_source,
                         )
-                        missing_ranges, missing_days = find_missing_day_ranges(cached_dates, trading_days)
+                        missing_ranges, missing_days = find_missing_day_ranges(
+                            cached_dates, trading_days
+                        )
 
                 if missing_ranges:
                     fetched_rows = backfill_missing_ranges(
@@ -416,11 +443,13 @@ def update_stock(
                     kl_type=kl_type,
                     begin_date=start_date,
                     end_date=end_date,
-                    data_src_fetcher=fetcher
+                    data_src_fetcher=fetcher,
                 )
 
                 if only_missing and kl_type != KL_TYPE.K_DAY:
-                    logger.info(f"[{code} {kl_type_str}] 当前仅 DAY 支持历史补缺，已回退为普通增量更新")
+                    logger.info(
+                        f"[{code} {kl_type_str}] 当前仅 DAY 支持历史补缺，已回退为普通增量更新"
+                    )
 
             # 获取缓存信息
             info = data_manager.get_cache_info(code, kl_type)
@@ -507,43 +536,25 @@ def update_all_stocks(
 def main():
     parser = argparse.ArgumentParser(description="K线数据更新脚本")
 
+    parser.add_argument("--codes", nargs="+", help="指定股票代码，如: 000001 000002")
+    parser.add_argument("--all", action="store_true", help="更新所有已缓存的股票")
     parser.add_argument(
-        '--codes',
-        nargs='+',
-        help='指定股票代码，如: 000001 000002'
+        "--kl-types",
+        nargs="+",
+        default=["DAY", "WEEK"],
+        choices=["DAY", "WEEK", "MON", "30M", "15M", "5M", "1M"],
+        help="K线周期类型 (默认: DAY WEEK)",
+    )
+    parser.add_argument("--refresh", action="store_true", help="清除缓存后重新获取")
+    parser.add_argument("--verbose", action="store_true", help="显示详细日志")
+    parser.add_argument(
+        "--data-source",
+        default="tushare",
+        choices=["tushare", "baostock"],
+        help="数据源 (默认: tushare)",
     )
     parser.add_argument(
-        '--all',
-        action='store_true',
-        help='更新所有已缓存的股票'
-    )
-    parser.add_argument(
-        '--kl-types',
-        nargs='+',
-        default=['DAY', 'WEEK'],
-        choices=['DAY', 'WEEK', 'MON', '30M', '15M', '5M', '1M'],
-        help='K线周期类型 (默认: DAY WEEK)'
-    )
-    parser.add_argument(
-        '--refresh',
-        action='store_true',
-        help='清除缓存后重新获取'
-    )
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='显示详细日志'
-    )
-    parser.add_argument(
-        '--data-source',
-        default='tushare',
-        choices=['tushare', 'baostock'],
-        help='数据源 (默认: tushare)'
-    )
-    parser.add_argument(
-        '--only-missing',
-        action='store_true',
-        help='只补齐已缓存日线中的历史缺失区间'
+        "--only-missing", action="store_true", help="只补齐已缓存日线中的历史缺失区间"
     )
 
     args = parser.parse_args()
@@ -559,13 +570,13 @@ def main():
 
     # 解析周期类型
     kl_type_map = {
-        '1M': KL_TYPE.K_1M,
-        '5M': KL_TYPE.K_5M,
-        '15M': KL_TYPE.K_15M,
-        '30M': KL_TYPE.K_30M,
-        'DAY': KL_TYPE.K_DAY,
-        'WEEK': KL_TYPE.K_WEEK,
-        'MON': KL_TYPE.K_MON,
+        "1M": KL_TYPE.K_1M,
+        "5M": KL_TYPE.K_5M,
+        "15M": KL_TYPE.K_15M,
+        "30M": KL_TYPE.K_30M,
+        "DAY": KL_TYPE.K_DAY,
+        "WEEK": KL_TYPE.K_WEEK,
+        "MON": KL_TYPE.K_MON,
     }
     kl_types = [kl_type_map[t] for t in args.kl_types]
 

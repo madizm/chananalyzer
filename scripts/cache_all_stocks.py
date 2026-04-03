@@ -17,15 +17,16 @@
     # 限制数量（测试用）
     python -m scripts.cache_all_stocks --all --limit 100
 """
+
 import argparse
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List
 
 # ==================== 修复 tushare 权限问题 ====================
-os.environ['TUSHARE_PATH'] = '/tmp'
+os.environ["TUSHARE_PATH"] = "/tmp"
 
 import pandas as pd
 import tushare as ts
@@ -33,26 +34,29 @@ import tushare as ts
 _original_set_token = ts.set_token
 _original_pro_api = ts.pro_api
 
+
 def _patched_set_token(token):
-    fp = '/tmp/tk.csv'
+    fp = "/tmp/tk.csv"
     if os.path.exists(fp):
         try:
             os.remove(fp)
         except:
             pass
-    df = pd.DataFrame({'token': [token]})
+    df = pd.DataFrame({"token": [token]})
     df.to_csv(fp, index=False)
     ts._Tushare__token = token
+
 
 def _patched_pro_api(token=None):
     if token:
         return _original_pro_api(token=token)
-    fp = '/tmp/tk.csv'
+    fp = "/tmp/tk.csv"
     if os.path.exists(fp):
         df = pd.read_csv(fp)
-        token = df['token'][0]
+        token = df["token"][0]
         return _original_pro_api(token=token)
     return _original_pro_api()
+
 
 ts.set_token = _patched_set_token
 ts.pro_api = _patched_pro_api
@@ -60,6 +64,7 @@ ts.pro_api = _patched_pro_api
 
 try:
     from tqdm import tqdm
+
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
@@ -72,6 +77,10 @@ from ChanAnalyzer.database import init_db
 from ChanAnalyzer.data_manager import data_manager
 from DataAPI.BaoStockAPI import CBaoStock
 from DataAPI.TushareAPI import CTushareAPI
+from scripts.baostock_utils import (
+    get_a_share_stock_rows,
+    get_effective_baostock_trade_date,
+)
 
 
 def normalize_baostock_code(code: str) -> str:
@@ -92,30 +101,35 @@ def get_api_class(data_source: str):
     return CTushareAPI
 
 
-def cache_stock(code: str, kl_types: List[KL_TYPE], begin_date: str, end_date: str, data_source: str) -> bool:
+def cache_stock(
+    code: str, kl_types: List[KL_TYPE], begin_date: str, end_date: str, data_source: str
+) -> bool:
     """缓存单只股票数据"""
     success = True
     api_class = get_api_class(data_source)
     api_code = normalize_baostock_code(code) if data_source == "baostock" else code
     for kl_type in kl_types:
         try:
+
             def fetcher(code, kl_type, begin, end):
                 api = api_class(
                     code=api_code,
                     k_type=kl_type,
                     begin_date=begin,
                     end_date=end,
-                    autype=AUTYPE.QFQ
+                    autype=AUTYPE.QFQ,
                 )
                 return api.get_kl_data()
 
-            list(data_manager.get_kl_data(
-                code=code,
-                kl_type=kl_type,
-                begin_date=begin_date,
-                end_date=end_date,
-                data_src_fetcher=fetcher
-            ))
+            list(
+                data_manager.get_kl_data(
+                    code=code,
+                    kl_type=kl_type,
+                    begin_date=begin_date,
+                    end_date=end_date,
+                    data_src_fetcher=fetcher,
+                )
+            )
         except Exception as e:
             print(f"[失败] {code} ({data_source}): {e}")
             success = False
@@ -159,70 +173,35 @@ def cache_all_stocks(
 def get_all_stock_codes_from_tushare() -> List[str]:
     """获取所有 A 股代码"""
     import tushare as ts
+
     token = os.environ.get("TUSHARE_TOKEN")
     if not token:
         raise ValueError("请设置 TUSHARE_TOKEN 环境变量")
     ts.set_token(token)
     pro = ts.pro_api()
 
-    df = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name')
-    df = df[(df['ts_code'].str.endswith('.SZ')) | (df['ts_code'].str.endswith('.SH'))]
-    df = df[~df['name'].str.contains('ST')]
+    df = pro.stock_basic(exchange="", list_status="L", fields="ts_code,symbol,name")
+    df = df[(df["ts_code"].str.endswith(".SZ")) | (df["ts_code"].str.endswith(".SH"))]
+    df = df[~df["name"].str.contains("ST")]
 
-    return df['symbol'].tolist()
+    return df["symbol"].tolist()
 
 
 def get_all_stock_codes_from_baostock() -> List[str]:
     """使用 BaoStock 获取所有 A 股代码"""
-    import baostock as bs
-
     CBaoStock.do_init()
-    query_day = get_latest_baostock_trade_date()
-    rs = bs.query_all_stock(day=query_day)
-    if rs.error_code != "0":
-        raise ValueError(f"BaoStock 获取股票列表失败: {rs.error_msg}")
+    query_day = get_effective_baostock_trade_date(log_fn=print)
+    rows = get_a_share_stock_rows(query_day)
 
     stock_codes = []
-    while rs.error_code == "0" and rs.next():
-        code, *_ = rs.get_row_data()
+    for row in rows:
+        code, *_ = row
         if not code:
             continue
-        market, symbol = code.split(".", 1)
-        if market not in {"sh", "sz"}:
-            continue
-        if not symbol.isdigit():
-            continue
-        if symbol.startswith(("688", "8", "4", "5", "9")):
-            continue
+        _, symbol = code.split(".", 1)
         stock_codes.append(symbol)
 
     return stock_codes
-
-
-def get_latest_baostock_trade_date(lookback_days: int = 30) -> str:
-    """获取 BaoStock 最近一个交易日，避免周末或节假日返回空列表。"""
-    import baostock as bs
-
-    CBaoStock.do_init()
-    end_day = datetime.now().date()
-    start_day = end_day - timedelta(days=lookback_days)
-    rs = bs.query_trade_dates(
-        start_date=start_day.strftime("%Y-%m-%d"),
-        end_date=end_day.strftime("%Y-%m-%d"),
-    )
-    if rs.error_code != "0":
-        raise ValueError(f"BaoStock 获取交易日失败: {rs.error_msg}")
-
-    latest_trade_date = None
-    while rs.error_code == "0" and rs.next():
-        trade_date, is_trading_day = rs.get_row_data()
-        if is_trading_day == "1":
-            latest_trade_date = trade_date
-
-    if not latest_trade_date:
-        raise ValueError("BaoStock 未返回最近交易日")
-
-    return latest_trade_date
 
 
 def get_all_stock_codes(data_source: str) -> List[str]:
@@ -232,18 +211,31 @@ def get_all_stock_codes(data_source: str) -> List[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='批量缓存 A 股 K 线数据')
-    parser.add_argument('--codes', nargs='+', help='指定股票代码')
-    parser.add_argument('--all', action='store_true', help='缓存所有 A 股')
-    parser.add_argument('--limit', type=int, help='限制数量')
-    parser.add_argument('--begin', default='2026-03-20', help='开始日期')
-    parser.add_argument('--end', default=None, help='结束日期（默认今天）')
-    parser.add_argument('--delay', type=float, default=0.3, help='每只股票之间的延迟秒数（默认0.3秒，避免触发频次限制）')
-    parser.add_argument('--data-source', default='tushare', choices=['tushare', 'baostock'],
-                       help='数据源 (默认: tushare)')
-    parser.add_argument('--kl-types', nargs='+', default=['DAY', 'WEEK'],
-                       choices=['DAY', 'WEEK', 'MON', '30M'],
-                       help='K线周期类型 (默认: DAY WEEK，可选增加 30M)')
+    parser = argparse.ArgumentParser(description="批量缓存 A 股 K 线数据")
+    parser.add_argument("--codes", nargs="+", help="指定股票代码")
+    parser.add_argument("--all", action="store_true", help="缓存所有 A 股")
+    parser.add_argument("--limit", type=int, help="限制数量")
+    parser.add_argument("--begin", default="2026-03-20", help="开始日期")
+    parser.add_argument("--end", default=None, help="结束日期（默认今天）")
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.3,
+        help="每只股票之间的延迟秒数（默认0.3秒，避免触发频次限制）",
+    )
+    parser.add_argument(
+        "--data-source",
+        default="tushare",
+        choices=["tushare", "baostock"],
+        help="数据源 (默认: tushare)",
+    )
+    parser.add_argument(
+        "--kl-types",
+        nargs="+",
+        default=["DAY", "WEEK"],
+        choices=["DAY", "WEEK", "MON", "30M"],
+        help="K线周期类型 (默认: DAY WEEK，可选增加 30M)",
+    )
 
     args = parser.parse_args()
 
@@ -252,10 +244,10 @@ def main():
 
     # 解析周期类型
     kl_type_map = {
-        'DAY': KL_TYPE.K_DAY,
-        'WEEK': KL_TYPE.K_WEEK,
-        'MON': KL_TYPE.K_MON,
-        '30M': KL_TYPE.K_30M,
+        "DAY": KL_TYPE.K_DAY,
+        "WEEK": KL_TYPE.K_WEEK,
+        "MON": KL_TYPE.K_MON,
+        "30M": KL_TYPE.K_30M,
     }
     kl_types = [kl_type_map[t] for t in args.kl_types]
 
@@ -278,12 +270,14 @@ def main():
 
         # 限制数量
         if args.limit:
-            stock_codes = stock_codes[:args.limit]
+            stock_codes = stock_codes[: args.limit]
             print(f"限制数量: {len(stock_codes)}")
 
         if args.delay > 0:
             print(f"请求延迟: {args.delay} 秒/股")
-        cache_all_stocks(stock_codes, kl_types, args.begin, end_date, args.data_source, args.delay)
+        cache_all_stocks(
+            stock_codes, kl_types, args.begin, end_date, args.data_source, args.delay
+        )
     finally:
         api_class.do_close()
 

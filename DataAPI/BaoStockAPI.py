@@ -57,7 +57,14 @@ def GetColumnNameFromFieldList(fileds: str):
 class CBaoStock(CCommonStockApi):
     is_connect = None
 
-    def __init__(self, code, k_type=KL_TYPE.K_DAY, begin_date=None, end_date=None, autype=AUTYPE.QFQ):
+    def __init__(
+        self,
+        code,
+        k_type=KL_TYPE.K_DAY,
+        begin_date=None,
+        end_date=None,
+        autype=AUTYPE.QFQ,
+    ):
         super(CBaoStock, self).__init__(code, k_type, begin_date, end_date, autype)
 
     def get_kl_data(self):
@@ -78,18 +85,33 @@ class CBaoStock(CCommonStockApi):
             frequency=self.__convert_type(),
             adjustflag=adjustflag,
         )
-        if rs.error_code != '0':
+        if rs.error_code != "0":
             raise Exception(rs.error_msg)
-        while rs.error_code == '0' and rs.next():
-            yield CKLine_Unit(create_item_dict(rs.get_row_data(), GetColumnNameFromFieldList(fields)))
+        while rs.error_code == "0" and rs.next():
+            yield CKLine_Unit(
+                create_item_dict(rs.get_row_data(), GetColumnNameFromFieldList(fields))
+            )
 
     def SetBasciInfo(self):
         rs = bs.query_stock_basic(code=self.code)
-        if rs.error_code != '0':
+        if rs.error_code != "0":
             raise Exception(rs.error_msg)
-        code, code_name, ipoDate, outDate, stock_type, status = rs.get_row_data()
+        if not rs.next():
+            self.name = self.code
+            self.is_stock = False
+            raise Exception(
+                f"BaoStock 未返回股票基本信息，可能是指数/基金/无效代码: {self.code}"
+            )
+        row = rs.get_row_data()
+        if len(row) < 6:
+            self.name = self.code
+            self.is_stock = False
+            raise Exception(
+                f"BaoStock 股票基本信息字段异常，可能是指数/基金/无效代码: {self.code}"
+            )
+        code, code_name, ipoDate, outDate, stock_type, status = row
         self.name = code_name
-        self.is_stock = (stock_type == '1')
+        self.is_stock = stock_type == "1"
 
     @classmethod
     def do_init(cls):
@@ -104,12 +126,12 @@ class CBaoStock(CCommonStockApi):
 
     def __convert_type(self):
         _dict = {
-            KL_TYPE.K_DAY: 'd',
-            KL_TYPE.K_WEEK: 'w',
-            KL_TYPE.K_MON: 'm',
-            KL_TYPE.K_5M: '5',
-            KL_TYPE.K_15M: '15',
-            KL_TYPE.K_30M: '30',
-            KL_TYPE.K_60M: '60',
+            KL_TYPE.K_DAY: "d",
+            KL_TYPE.K_WEEK: "w",
+            KL_TYPE.K_MON: "m",
+            KL_TYPE.K_5M: "5",
+            KL_TYPE.K_15M: "15",
+            KL_TYPE.K_30M: "30",
+            KL_TYPE.K_60M: "60",
         }
         return _dict[self.k_type]
