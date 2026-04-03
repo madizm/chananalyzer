@@ -65,7 +65,50 @@ class CBaoStock(CCommonStockApi):
         end_date=None,
         autype=AUTYPE.QFQ,
     ):
-        super(CBaoStock, self).__init__(code, k_type, begin_date, end_date, autype)
+        normalized_code = self._normalize_code_for_baostock(code)
+        super(CBaoStock, self).__init__(
+            normalized_code, k_type, begin_date, end_date, autype
+        )
+
+    @staticmethod
+    def _normalize_code_for_baostock(code: str) -> str:
+        """
+        统一转换为 BaoStock 可识别的 9 位股票代码格式：
+        - 6位纯数字: 600000 -> sh.600000, 000001 -> sz.000001
+        - 9位带点格式: sh.600000 / sz.000001
+        - 8位前缀无点: sh600000 / sz000001
+        """
+        if code is None:
+            raise ValueError("股票代码不能为空")
+
+        raw_code = str(code).strip()
+        code_lower = raw_code.lower()
+
+        # 已是标准格式
+        if (
+            len(code_lower) == 9
+            and code_lower[2] == "."
+            and code_lower[:2] in ("sh", "sz")
+            and code_lower[3:].isdigit()
+        ):
+            return code_lower
+
+        # 无点前缀格式
+        if (
+            len(code_lower) == 8
+            and code_lower[:2] in ("sh", "sz")
+            and code_lower[2:].isdigit()
+        ):
+            return f"{code_lower[:2]}.{code_lower[2:]}"
+
+        # 6位纯数字格式
+        if len(code_lower) == 6 and code_lower.isdigit():
+            market = "sh" if code_lower.startswith("6") else "sz"
+            return f"{market}.{code_lower}"
+
+        raise ValueError(
+            f"无效股票代码格式: {raw_code}，请使用 6 位数字或 sh.600000/sz.000001 格式"
+        )
 
     def get_kl_data(self):
         # 天级别以上才有详细交易信息

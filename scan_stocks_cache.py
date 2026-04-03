@@ -553,9 +553,12 @@ def analyze_stock(
     sell_types: List[str],
     begin_date: str = None,
     end_date: str = None,
+    signal_begin_date: str = None,
+    signal_end_date: str = None,
     use_weekly: bool = False,
     config: CChanConfig = None,
     joint_config: Optional[Dict[str, Any]] = None,
+    stage_stats: Optional[Dict[str, int]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     分析单只股票的买卖点
@@ -571,41 +574,29 @@ def analyze_stock(
 
         joint_config = joint_config or {}
         is_joint = bool(joint_config.get("enabled", False))
+        stage_stats = stage_stats if stage_stats is not None else {}
+        two_stage_enabled = bool(joint_config.get("two_stage_enabled", False))
 
-        # 设置K线级别
-        if is_joint:
-            higher_level = joint_config["higher_level"]
-            trigger_level = joint_config["trigger_level"]
-            lv_list = sorted(
-                [higher_level, trigger_level],
-                key=lambda level: KL_LEVEL_RANK[level],
-                reverse=True,
-            )
-        elif use_weekly:
-            lv_list = [KL_TYPE.K_WEEK, KL_TYPE.K_DAY]  # 从大级别到小级别
+        signal_default_days = 5
+        today = datetime.now()
+        if signal_begin_date and signal_end_date:
+            signal_begin_dt = datetime.strptime(signal_begin_date, "%Y-%m-%d")
+            signal_end_dt = datetime.strptime(signal_end_date, "%Y-%m-%d")
+        elif signal_begin_date:
+            signal_begin_dt = datetime.strptime(signal_begin_date, "%Y-%m-%d")
+            signal_end_dt = today
+        elif signal_end_date:
+            signal_end_dt = datetime.strptime(signal_end_date, "%Y-%m-%d")
+            signal_begin_dt = signal_end_dt - timedelta(days=signal_default_days)
         else:
-            lv_list = [KL_TYPE.K_DAY]
+            signal_end_dt = today
+            signal_begin_dt = signal_end_dt - timedelta(days=signal_default_days)
 
-        # 创建缠论分析对象
-        chan = CChan(
-            code=code,
-            begin_time=begin_date,
-            end_time=end_date,
-            data_src=DATA_SRC.CACHE_DB,
-            lv_list=lv_list,
-            config=config,
-            autype=AUTYPE.QFQ,
-        )
-
-        # 检查是否有数据
-        if len(chan[0]) == 0:
-            return None
-
-        # 筛选最近窗口内的买卖点（默认最近30天）
-        window_days = int(joint_config.get("window_days", 30) if is_joint else 30)
-        cutoff_date = datetime.now() - timedelta(days=window_days)
+        if signal_begin_dt > signal_end_dt:
+            raise ValueError("信号日期过滤区间非法: signal-begin 不能晚于 signal-end")
 
         def collect_level_signals(
+            chan: CChan,
             level_idx: int,
             period_label: str,
             matched_buy_types: Optional[List[str]] = None,
@@ -617,7 +608,7 @@ def analyze_stock(
                 bsp_date = datetime(
                     bsp.klu.time.year, bsp.klu.time.month, bsp.klu.time.day
                 )
-                if bsp_date < cutoff_date:
+                if bsp_date < signal_begin_dt or bsp_date > signal_end_dt:
                     continue
 
                 bsp_type = bsp.type2str()
@@ -644,21 +635,18 @@ def analyze_stock(
                     )
             return signals
 
-        if is_joint:
-            higher_level = joint_config["higher_level"]
-            trigger_level = joint_config["trigger_level"]
-            higher_filter_mode = joint_config.get("higher_filter_mode", "state")
-            higher_state_rule = joint_config.get(
-                "higher_state_rule", "up_or_above_zs"
-            )
-            higher_buy_types = joint_config.get(
-                "higher_buy_types", ["1", "1p", "2", "3a", "3b"]
-            )
-            trigger_buy_types = joint_config.get("trigger_buy_types", buy_types)
-
+        def evaluate_joint_filter(
+            chan: CChan,
+            lv_list: List[KL_TYPE],
+            higher_level: KL_TYPE,
+            trigger_level: KL_TYPE,
+            higher_filter_mode: str,
+            higher_state_rule: str,
+            higher_buy_types: List[str],
+            trigger_buy_types: List[str],
+        ) -> Dict[str, Any]:
             higher_idx = lv_list.index(higher_level)
             trigger_idx = lv_list.index(trigger_level)
-
             higher_state = _get_higher_level_state(
                 chan=chan,
                 level_idx=higher_idx,
@@ -670,6 +658,7 @@ def analyze_stock(
 
             if higher_filter_mode in ("window", "hybrid"):
                 higher_signals = collect_level_signals(
+                    chan=chan,
                     level_idx=higher_idx,
                     period_label=KL_LEVEL_LABEL[higher_level],
                     matched_buy_types=higher_buy_types,
@@ -677,6 +666,7 @@ def analyze_stock(
                 window_pass = bool(higher_signals)
 
             trigger_signals = collect_level_signals(
+                chan=chan,
                 level_idx=trigger_idx,
                 period_label=KL_LEVEL_LABEL[trigger_level],
                 matched_buy_types=trigger_buy_types,
@@ -696,14 +686,174 @@ def analyze_stock(
                 higher_pass = state_pass
                 higher_pass_reason = "state_pass" if higher_pass else "state_not_pass"
 
-            if not higher_pass or not trigger_signals:
-                return None
+            return {
+                "higher_state": higher_state,
+                "higher_signals": higher_signals,
+                "trigger_signals": trigger_signals,
+                "higher_pass": higher_pass,
+                "higher_pass_reason": higher_pass_reason,
+            }
 
+        def resolve_realtime_begin_date(
+            user_begin: str, signal_begin_dt_local: datetime
+        ) -> str:
+            candidate_begin = signal_begin_dt_local - timedelta(days=15)
+            try:
+                user_begin_dt = datetime.strptime(user_begin, "%Y-%m-%d")
+                return max(user_begin_dt, candidate_begin).strftime("%Y-%m-%d")
+            except (TypeError, ValueError):
+                return candidate_begin.strftime("%Y-%m-%d")
+
+        if is_joint:
+            higher_level = joint_config["higher_level"]
+            trigger_level = joint_config["trigger_level"]
+            higher_filter_mode = joint_config.get("higher_filter_mode", "state")
+            higher_state_rule = joint_config.get("higher_state_rule", "up_or_above_zs")
+            higher_buy_types = joint_config.get(
+                "higher_buy_types", ["1", "1p", "2", "3a", "3b"]
+            )
+            trigger_buy_types = joint_config.get("trigger_buy_types", buy_types)
+            is_day_30m_joint = (
+                higher_level == KL_TYPE.K_DAY and trigger_level == KL_TYPE.K_30M
+            )
+
+            if two_stage_enabled and is_day_30m_joint:
+                stage_stats["two_stage_total"] = (
+                    stage_stats.get("two_stage_total", 0) + 1
+                )
+
+                stage1_lv_list = [higher_level]
+                stage1_chan = CChan(
+                    code=code,
+                    begin_time=begin_date,
+                    end_time=end_date,
+                    data_src=DATA_SRC.CACHE_DB,
+                    lv_list=stage1_lv_list,
+                    config=config,
+                    autype=AUTYPE.QFQ,
+                )
+                if len(stage1_chan[0]) == 0:
+                    return None
+
+                stage1_higher_state = _get_higher_level_state(
+                    chan=stage1_chan,
+                    level_idx=0,
+                    state_rule=higher_state_rule,
+                )
+                stage1_state_pass = bool(stage1_higher_state["pass_state_filter"])
+                stage1_window_pass = True
+                if higher_filter_mode in ("window", "hybrid"):
+                    stage1_higher_signals = collect_level_signals(
+                        chan=stage1_chan,
+                        level_idx=0,
+                        period_label=KL_LEVEL_LABEL[higher_level],
+                        matched_buy_types=higher_buy_types,
+                    )
+                    stage1_window_pass = bool(stage1_higher_signals)
+
+                if higher_filter_mode == "window":
+                    stage1_higher_pass = stage1_window_pass
+                elif higher_filter_mode == "hybrid":
+                    stage1_higher_pass = stage1_state_pass and stage1_window_pass
+                else:
+                    stage1_higher_pass = stage1_state_pass
+
+                if not stage1_higher_pass:
+                    return None
+                stage_stats["stage1_pass"] = stage_stats.get("stage1_pass", 0) + 1
+                stage_stats["stage2_requested"] = (
+                    stage_stats.get("stage2_requested", 0) + 1
+                )
+
+                stage2_lv_list = sorted(
+                    [higher_level, trigger_level],
+                    key=lambda level: KL_LEVEL_RANK[level],
+                    reverse=True,
+                )
+                stage2_begin_date = resolve_realtime_begin_date(
+                    begin_date, signal_begin_dt
+                )
+                stage2_chan = CChan(
+                    code=code,
+                    begin_time=stage2_begin_date,
+                    end_time=end_date,
+                    data_src=DATA_SRC.BAO_STOCK,
+                    lv_list=stage2_lv_list,
+                    config=config,
+                    autype=AUTYPE.QFQ,
+                )
+                if len(stage2_chan[0]) == 0:
+                    return None
+
+                joint_eval = evaluate_joint_filter(
+                    chan=stage2_chan,
+                    lv_list=stage2_lv_list,
+                    higher_level=higher_level,
+                    trigger_level=trigger_level,
+                    higher_filter_mode=higher_filter_mode,
+                    higher_state_rule=higher_state_rule,
+                    higher_buy_types=higher_buy_types,
+                    trigger_buy_types=trigger_buy_types,
+                )
+                if not joint_eval["higher_pass"] or not joint_eval["trigger_signals"]:
+                    return None
+                stage_stats["stage2_pass"] = stage_stats.get("stage2_pass", 0) + 1
+            else:
+                lv_list = sorted(
+                    [higher_level, trigger_level],
+                    key=lambda level: KL_LEVEL_RANK[level],
+                    reverse=True,
+                )
+                chan = CChan(
+                    code=code,
+                    begin_time=begin_date,
+                    end_time=end_date,
+                    data_src=DATA_SRC.CACHE_DB,
+                    lv_list=lv_list,
+                    config=config,
+                    autype=AUTYPE.QFQ,
+                )
+                if len(chan[0]) == 0:
+                    return None
+                joint_eval = evaluate_joint_filter(
+                    chan=chan,
+                    lv_list=lv_list,
+                    higher_level=higher_level,
+                    trigger_level=trigger_level,
+                    higher_filter_mode=higher_filter_mode,
+                    higher_state_rule=higher_state_rule,
+                    higher_buy_types=higher_buy_types,
+                    trigger_buy_types=trigger_buy_types,
+                )
+                if not joint_eval["higher_pass"] or not joint_eval["trigger_signals"]:
+                    return None
+
+            higher_state = joint_eval["higher_state"]
+            higher_signals = joint_eval["higher_signals"]
+            trigger_signals = joint_eval["trigger_signals"]
+            higher_pass = joint_eval["higher_pass"]
+            higher_pass_reason = joint_eval["higher_pass_reason"]
             matched_signals = trigger_signals
         else:
+            if use_weekly:
+                lv_list = [KL_TYPE.K_WEEK, KL_TYPE.K_DAY]
+            else:
+                lv_list = [KL_TYPE.K_DAY]
+            chan = CChan(
+                code=code,
+                begin_time=begin_date,
+                end_time=end_date,
+                data_src=DATA_SRC.CACHE_DB,
+                lv_list=lv_list,
+                config=config,
+                autype=AUTYPE.QFQ,
+            )
+            if len(chan[0]) == 0:
+                return None
             level_idx = 0
             period_label = "周线" if use_weekly else "日线"
             matched_signals = collect_level_signals(
+                chan=chan,
                 level_idx=level_idx,
                 period_label=period_label,
                 matched_buy_types=buy_types,
@@ -733,9 +883,11 @@ def analyze_stock(
                 "higher_state_rule": higher_state_rule,
                 "higher_filter_pass": higher_pass,
                 "higher_filter_reason": higher_pass_reason,
-                "window_days": window_days,
+                "signal_begin": signal_begin_dt.strftime("%Y-%m-%d"),
+                "signal_end": signal_end_dt.strftime("%Y-%m-%d"),
                 "higher_buy_types": higher_buy_types,
                 "trigger_buy_types": trigger_buy_types,
+                "two_stage": two_stage_enabled and is_day_30m_joint,
             }
         return result
 
@@ -749,6 +901,8 @@ def scan_stocks(
     sell_types: List[str] = None,
     begin_date: str = None,
     end_date: str = None,
+    signal_begin_date: str = None,
+    signal_end_date: str = None,
     use_weekly: bool = False,
     joint_config: Optional[Dict[str, Any]] = None,
     bi_strict: bool = True,
@@ -757,6 +911,7 @@ def scan_stocks(
     min_money_flow: float = 0,
     verbose: bool = True,
     progress_callback: callable = None,
+    stats_out: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     扫描股票列表
@@ -784,6 +939,8 @@ def scan_stocks(
         sell_types = []
     if joint_config is None:
         joint_config = {"enabled": False}
+    if stats_out is None:
+        stats_out = {}
 
     # 配置缠论参数
     config = CChanConfig(
@@ -805,6 +962,7 @@ def scan_stocks(
 
     results = []
     total = len(stock_codes)
+    stage_stats: Dict[str, int] = {}
 
     # 创建进度条
     iterator = enumerate(stock_codes)
@@ -818,9 +976,12 @@ def scan_stocks(
             sell_types=sell_types,
             begin_date=begin_date,
             end_date=end_date,
+            signal_begin_date=signal_begin_date,
+            signal_end_date=signal_end_date,
             use_weekly=use_weekly,
             config=config,
             joint_config=joint_config,
+            stage_stats=stage_stats,
         )
 
         if result:
@@ -852,6 +1013,31 @@ def scan_stocks(
         results.sort(
             key=lambda x: x.get("money_flow", {}).get("net_main_amount", -999999),
             reverse=True,
+        )
+
+    stats_out.update(
+        {
+            "scanned_total": total,
+            "two_stage_total": stage_stats.get("two_stage_total", 0),
+            "stage1_pass": stage_stats.get("stage1_pass", 0),
+            "stage2_requested": stage_stats.get("stage2_requested", 0),
+            "stage2_pass": stage_stats.get("stage2_pass", 0),
+        }
+    )
+    if (
+        verbose
+        and joint_config.get("enabled")
+        and joint_config.get("two_stage_enabled")
+    ):
+        print("\n两段式联立统计:")
+        print(
+            f"  - 扫描总数: {stats_out['scanned_total']} | "
+            f"两段式适用: {stats_out['two_stage_total']}"
+        )
+        print(
+            f"  - 阶段1(日线缓存)通过: {stats_out['stage1_pass']} | "
+            f"阶段2(实时30M)请求: {stats_out['stage2_requested']} | "
+            f"阶段2最终通过: {stats_out['stage2_pass']}"
         )
 
     return results
@@ -923,12 +1109,8 @@ def _print_list_view(
         if stock.get("higher_state"):
             hs = stock["higher_state"]
             print("  上级结构状态:")
-            print(
-                f"    - 上涨段: {hs.get('is_uptrend')} ({hs.get('uptrend_source')})"
-            )
-            print(
-                f"    - 中枢位置: {hs.get('zs_position')}"
-            )
+            print(f"    - 上涨段: {hs.get('is_uptrend')} ({hs.get('uptrend_source')})")
+            print(f"    - 中枢位置: {hs.get('zs_position')}")
             print(
                 f"    - 状态过滤通过: {hs.get('pass_state_filter')} ({hs.get('state_rule')})"
             )
@@ -992,7 +1174,7 @@ def save_results_to_database(
     db = SessionLocal()
     try:
         scan_run = ScanRun(
-            source="scan_stocks_cache",
+            source=scan_params.get("source", "scan_stocks_cache"),
             started_at=started_at,
             finished_at=finished_at,
             scanned_count=scanned_count,
@@ -1165,8 +1347,18 @@ def main():
     parser.add_argument("--sell", nargs="+", default=[], help="筛选卖出类型")
     parser.add_argument("--begin", help="开始日期")
     parser.add_argument("--end", help="结束日期")
+    parser.add_argument(
+        "--signal-begin",
+        help="信号日期过滤开始日期（YYYY-MM-DD，默认近5天）",
+    )
+    parser.add_argument(
+        "--signal-end",
+        help="信号日期过滤结束日期（YYYY-MM-DD，默认今天）",
+    )
     parser.add_argument("--weekly", action="store_true", help="使用周线分析")
-    parser.add_argument("--joint", action="store_true", help="启用多级别联立买点（上级过滤+下级触发）")
+    parser.add_argument(
+        "--joint", action="store_true", help="启用多级别联立买点（上级过滤+下级触发）"
+    )
     parser.add_argument(
         "--higher-level",
         default="DAY",
@@ -1195,7 +1387,7 @@ def main():
         "--window-days",
         type=int,
         default=30,
-        help="联立判定窗口天数（自然日，默认: 30）",
+        help="(兼容参数) 已不用于信号日期过滤",
     )
     parser.add_argument(
         "--higher-filter-mode",
@@ -1239,6 +1431,28 @@ def main():
     )
 
     args = parser.parse_args()
+
+    def resolve_signal_range_for_display() -> tuple[str, str]:
+        default_days = 5
+        now_dt = datetime.now()
+        if args.signal_begin and args.signal_end:
+            begin_dt = datetime.strptime(args.signal_begin, "%Y-%m-%d")
+            end_dt = datetime.strptime(args.signal_end, "%Y-%m-%d")
+        elif args.signal_begin:
+            begin_dt = datetime.strptime(args.signal_begin, "%Y-%m-%d")
+            end_dt = now_dt
+        elif args.signal_end:
+            end_dt = datetime.strptime(args.signal_end, "%Y-%m-%d")
+            begin_dt = end_dt - timedelta(days=default_days)
+        else:
+            end_dt = now_dt
+            begin_dt = end_dt - timedelta(days=default_days)
+        if begin_dt > end_dt:
+            raise ValueError("signal-begin 不能晚于 signal-end")
+        return begin_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
+
+    signal_begin_resolved, signal_end_resolved = resolve_signal_range_for_display()
+
     min_amount = (
         args.min_amount * AMOUNT_YI_UNIT if args.min_amount is not None else None
     )
@@ -1322,6 +1536,9 @@ def main():
         if KL_LEVEL_RANK[higher_level] <= KL_LEVEL_RANK[trigger_level]:
             raise ValueError("联立模式要求 higher-level 必须大于 trigger-level")
         trigger_buy_types = args.trigger_buy if args.trigger_buy else args.buy
+        two_stage_enabled = (
+            higher_level == KL_TYPE.K_DAY and trigger_level == KL_TYPE.K_30M
+        )
         joint_config = {
             "enabled": True,
             "higher_level": higher_level,
@@ -1331,6 +1548,7 @@ def main():
             "window_days": args.window_days,
             "higher_filter_mode": args.higher_filter_mode,
             "higher_state_rule": args.higher_state_rule,
+            "two_stage_enabled": two_stage_enabled,
         }
 
     # 开始扫描
@@ -1339,10 +1557,11 @@ def main():
     if args.sell:
         print(f"筛选卖出类型: {args.sell}")
     if args.joint:
-        print(
-            f"联立模式: 开启 ({args.higher_level} 过滤 + {args.trigger_level} 触发, "
-            f"窗口 {args.window_days} 天)"
-        )
+        print(f"联立模式: 开启 ({args.higher_level} 过滤 + {args.trigger_level} 触发)")
+        if joint_config.get("two_stage_enabled"):
+            print(
+                "两段式筛选: 开启（阶段1日线缓存预筛 -> 阶段2BaoStock实时DAY+30M复筛）"
+            )
         print(f"上级过滤模式: {args.higher_filter_mode}")
         if args.higher_filter_mode in ("state", "hybrid"):
             print(f"结构状态规则: {args.higher_state_rule}")
@@ -1350,21 +1569,27 @@ def main():
         print(f"触发级别买点: {joint_config['trigger_buy_types']}")
     else:
         print(f"周期: {'周线' if args.weekly else '日线'}")
+    print(f"数据日期范围: {args.begin or '默认(近1年)'} ~ {args.end or '今天'}")
+    print(f"信号日期过滤: {signal_begin_resolved} ~ {signal_end_resolved}")
     print(f"笔严格模式: {not args.no_strict}")
 
     started_at = datetime.now()
+    scan_stats: Dict[str, Any] = {}
     results = scan_stocks(
         stock_codes=stock_codes,
         buy_types=args.buy,
         sell_types=args.sell,
         begin_date=args.begin,
         end_date=args.end,
+        signal_begin_date=args.signal_begin,
+        signal_end_date=args.signal_end,
         use_weekly=args.weekly,
         joint_config=joint_config,
         bi_strict=not args.no_strict,
         show_money_flow=args.show_money_flow,
         sort_by_money_flow=args.sort_by_money_flow,
         min_money_flow=args.min_money_flow,
+        stats_out=scan_stats,
     )
     finished_at = datetime.now()
 
@@ -1382,10 +1607,17 @@ def main():
             results=results,
             stock_info=stock_info,
             scan_params={
+                "source": (
+                    "scan_stocks_cache_two_stage"
+                    if joint_config.get("two_stage_enabled")
+                    else "scan_stocks_cache"
+                ),
                 "buy": args.buy,
                 "sell": args.sell,
                 "begin": args.begin,
                 "end": args.end,
+                "signal_begin": signal_begin_resolved,
+                "signal_end": signal_end_resolved,
                 "weekly": args.weekly,
                 "joint": args.joint,
                 "higher_level": args.higher_level,
@@ -1395,6 +1627,11 @@ def main():
                 "window_days": args.window_days,
                 "higher_filter_mode": args.higher_filter_mode,
                 "higher_state_rule": args.higher_state_rule,
+                "joint_two_stage": joint_config.get("two_stage_enabled", False),
+                "joint_stage2_source": (
+                    "baostock" if joint_config.get("two_stage_enabled") else "cache_db"
+                ),
+                "joint_two_stage_stats": scan_stats,
                 "bi_strict": not args.no_strict,
                 "industry": args.industry,
                 "area": args.area,
