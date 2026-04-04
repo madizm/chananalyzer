@@ -25,10 +25,11 @@ def _normalize_bsp_types(type_text: str) -> List[str]:
 
 def is_day_uptrend(snapshot: CChan, day_idx: int) -> bool:
     day_kl = snapshot[day_idx]
-    # if len(day_kl.seg_list) > 0:
-    #     return day_kl.seg_list[-1].dir == BI_DIR.UP
     if len(day_kl.bi_list) > 0:
-        return day_kl.bi_list[-1].dir == BI_DIR.UP
+        last_bi = day_kl.bi_list[-1]
+        # 仅在“日线最新一笔为向上且未确认(虚笔)”时判定上升趋势，
+        # 避免最后确认笔仍向上但价格已进入回落阶段时误入场。
+        return last_bi.dir == BI_DIR.UP and not last_bi.is_sure
     return False
 
 
