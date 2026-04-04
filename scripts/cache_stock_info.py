@@ -9,6 +9,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -195,6 +196,86 @@ def fetch_stock_info_from_baostock():
         bs.logout()
 
 
+def fetch_stock_info_from_tdx():
+    """从 TDX 获取所有股票基本信息。"""
+    from TdxLib.tqcenter import tq
+
+    print("正在从 TDX 获取股票基本信息...")
+
+    strategy_path = str(Path(__file__).resolve())
+    dll_path = os.environ.get("TPYTHCLIENT_DLL", "")
+
+    try:
+        tq.initialize(path=strategy_path, dll_path=dll_path)
+        raw_list = tq.get_stock_list("5", list_type=1)
+        if not raw_list:
+            print("TDX 未返回股票列表数据")
+            return []
+
+        result = []
+        fail_count = 0
+
+        for idx, row in enumerate(raw_list, 1):
+            code_full = ""
+            name = ""
+
+            if isinstance(row, dict):
+                code_full = str(row.get("Code", row.get("code", "")) or "")
+                name = str(row.get("Name", row.get("name", "")) or "")
+            else:
+                code_full = str(row or "")
+
+            if "." not in code_full:
+                continue
+
+            symbol, market = code_full.split(".", 1)
+            market = market.upper()
+            if market not in {"SH", "SZ"}:
+                continue
+            if not symbol.isdigit() or len(symbol) != 6:
+                continue
+
+            industry = ""
+            area = ""
+
+            try:
+                info: dict[str, Any] = tq.get_stock_info(
+                    stock_code=code_full,
+                    field_list=["Name", "rs_hyname", "tdx_dyname"],
+                )
+                if isinstance(info, dict) and info:
+                    if not name:
+                        name = str(info.get("Name", "") or "")
+                    industry = str(info.get("rs_hyname", "") or "")
+                    area = str(info.get("tdx_dyname", "") or "")
+            except Exception as e:
+                fail_count += 1
+                print(f"TDX 获取 {code_full} 详情失败: {e}")
+
+            result.append(
+                {
+                    "code": symbol,
+                    "name": name,
+                    "industry": industry,
+                    "area": area,
+                }
+            )
+
+            if idx % 500 == 0:
+                print(f"TDX 进度: {idx}/{len(raw_list)}")
+
+        print(f"从 TDX 获取到 {len(result)} 只股票信息，详情失败 {fail_count} 只")
+        return result
+    except Exception as e:
+        print(f"从 TDX 获取股票信息失败: {e}")
+        return []
+    finally:
+        try:
+            tq.close()
+        except Exception:
+            pass
+
+
 def save_stock_info_to_db(stock_info_list):
     """保存股票信息到数据库"""
     if not stock_info_list:
@@ -253,7 +334,7 @@ def parse_args():
     parser.add_argument(
         "--data-source",
         default="tushare",
-        choices=["tushare", "baostock"],
+        choices=["tushare", "baostock", "tdx"],
         help="数据源 (默认: tushare)",
     )
     return parser.parse_args()
@@ -268,12 +349,11 @@ def main():
     print("=" * 60)
     print(f"数据源: {args.data_source}")
 
-    # 检查数据库
+    # 初始化数据库文件（不存在则自动创建）
     if not os.path.exists(DB_PATH):
-        print(f"错误: 数据库文件不存在: {DB_PATH}")
-        return
+        print(f"数据库文件不存在，正在初始化: {DB_PATH}")
 
-    # 检查表是否存在
+    # 检查表是否存在（不存在则创建）
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -296,11 +376,13 @@ def main():
     conn.close()
 
     # 获取并保存股票信息
-    fetcher = (
-        fetch_stock_info_from_baostock
-        if args.data_source == "baostock"
-        else fetch_stock_info_from_tushare
-    )
+    if args.data_source == "baostock":
+        fetcher = fetch_stock_info_from_baostock
+    elif args.data_source == "tdx":
+        fetcher = fetch_stock_info_from_tdx
+    else:
+        fetcher = fetch_stock_info_from_tushare
+
     stock_info_list = fetcher()
     if stock_info_list:
         save_stock_info_to_db(stock_info_list)
@@ -308,6 +390,8 @@ def main():
     else:
         if args.data_source == "tushare":
             print("\n未能获取股票信息，请检查 TUSHARE_TOKEN 配置")
+        elif args.data_source == "tdx":
+            print("\n未能获取股票信息，请检查 TDX 客户端与 DLL 配置")
         else:
             print("\n未能获取股票信息，请检查 BaoStock 连接状态")
 

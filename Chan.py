@@ -188,6 +188,9 @@ class CChan:
         elif self.data_src == DATA_SRC.CACHE_DB:
             from DataAPI.CacheDBAPI import CCacheDBAPI
             _dict[DATA_SRC.CACHE_DB] = CCacheDBAPI
+        elif self.data_src == DATA_SRC.TDX:
+            from DataAPI.TdxAPI import CTdxAPI
+            _dict[DATA_SRC.TDX] = CTdxAPI
         if self.data_src in _dict:
             return _dict[self.data_src]
         assert isinstance(self.data_src, str)

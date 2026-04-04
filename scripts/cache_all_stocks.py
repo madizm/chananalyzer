@@ -76,7 +76,9 @@ from Common.CEnum import AUTYPE, KL_TYPE
 from ChanAnalyzer.database import init_db
 from ChanAnalyzer.data_manager import data_manager
 from DataAPI.BaoStockAPI import CBaoStock
+from DataAPI.TdxAPI import CTdxAPI
 from DataAPI.TushareAPI import CTushareAPI
+from TdxLib.tqcenter import tq
 from scripts.baostock_utils import (
     get_a_share_stock_rows,
     get_effective_baostock_trade_date,
@@ -98,6 +100,8 @@ def normalize_baostock_code(code: str) -> str:
 def get_api_class(data_source: str):
     if data_source == "baostock":
         return CBaoStock
+    if data_source == "tdx":
+        return CTdxAPI
     return CTushareAPI
 
 
@@ -204,9 +208,30 @@ def get_all_stock_codes_from_baostock() -> List[str]:
     return stock_codes
 
 
+def get_all_stock_codes_from_tdx() -> List[str]:
+    """使用 TDX 获取所有 A 股代码。"""
+    values = tq.get_stock_list("5", list_type=0)
+    if not values:
+        print("TDX 未返回股票列表数据")
+        return []
+
+    stock_codes = []
+    for code in values:
+        code_full = str(code or "")
+        if "." not in code_full:
+            continue
+        symbol, market = code_full.split(".", 1)
+        market = market.upper()
+        if market in {"SH", "SZ"} and symbol.isdigit() and len(symbol) == 6:
+            stock_codes.append(symbol)
+    return stock_codes
+
+
 def get_all_stock_codes(data_source: str) -> List[str]:
     if data_source == "baostock":
         return get_all_stock_codes_from_baostock()
+    if data_source == "tdx":
+        return get_all_stock_codes_from_tdx()
     return get_all_stock_codes_from_tushare()
 
 
@@ -226,7 +251,7 @@ def main():
     parser.add_argument(
         "--data-source",
         default="tushare",
-        choices=["tushare", "baostock"],
+        choices=["tushare", "baostock", "tdx"],
         help="数据源 (默认: tushare)",
     )
     parser.add_argument(

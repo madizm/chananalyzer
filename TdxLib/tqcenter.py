@@ -8,7 +8,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from collections import defaultdict
 from datetime import datetime, timedelta
 import re
@@ -23,36 +23,109 @@ import threading
     2026-03-06
 '''
 
-global_dll_path = Path(__file__).resolve().parents[1] / 'TPythClient.dll'
-dll = ctypes.CDLL(str(global_dll_path))
+DEFAULT_TPYTHCLIENT_DLL_PATH = Path(r"D:\tdx_new\PYPlugins\TPythClient.dll")
+REPO_TPYTHCLIENT_DLL_PATH = Path(__file__).resolve().parents[1] / "TPythClient.dll"
+dll: Any = None
+_dll_dir_handles: List[Any] = []
+_loaded_dll_path: str = ""
 
-# 设置DLL函数的返回类型
-dll.InitConnect.restype = ctypes.c_char_p       # 初始化 获取id
-dll.GetStockListInStr.restype = ctypes.c_char_p  # 获取股票列表
-dll.GetHISDATsInStr.restype = ctypes.c_char_p   # K线数据
-dll.GetCWDATAInStr.restype = ctypes.c_char_p    # 复权数据
-dll.Register_DataTransferFunc.restype=None      # 注册外套回调函数
-dll.SubscribeGPData.restype=ctypes.c_char_p     # 订阅单股数据
-dll.SubscribeHQDUpdate.restype=ctypes.c_char_p     # 订阅单股行情更新
-dll.SetNewOrder.restype=ctypes.c_char_p         # 下单接口 
-dll.GetSTOCKInStr.restype=ctypes.c_char_p       # 获取股票详细信息
-dll.GetREPORTInStr.restype=ctypes.c_char_p      # 获取行情数据
-dll.SetResToMain.restype=ctypes.c_char_p        # 获取行情数据
-dll.GetBlockListInStr.restype=ctypes.c_char_p           # 获取板块列表
-dll.GetBlockStocksInStr.restype=ctypes.c_char_p         # 获取板块成分股
-dll.GetTradeCalendarInStr.restype=ctypes.c_char_p    # 获取交易日历数据
-dll.ReFreshCacheAll.restype=ctypes.c_char_p    # 刷新缓存行情
-dll.ReFreshCacheKLine.restype=ctypes.c_char_p    # 刷新缓存数据
-dll.DownLoadFiles.restype=ctypes.c_char_p    # 下载文件
-dll.UserBlockControl.restype=ctypes.c_char_p    # 自定义板块操作
-dll.GetProDataInStr.restype=ctypes.c_char_p         # 获取专业数据
-dll.GetCBINFOInStr.restype=ctypes.c_char_p         # 可转债基础信息
-dll.GetIPOINFOInStr.restype=ctypes.c_char_p         # 新股申购信息
-dll.GetUserBlockInStr.restype=ctypes.c_char_p         # 获取自定义板块
-dll.TdxFuncMain.restype=ctypes.c_char_p         # 通达信内部函数调用入口
-dll.GetMoreInfoInStr.restype=ctypes.c_char_p         # 获取股票更多信息
-dll.GetGbInfoInStr.restype=ctypes.c_char_p         # 获取股本信息
-dll.GetTrackZsETFInfoInStr.restype=ctypes.c_char_p         # 获取跟踪指数的ETF信息
+
+def _configure_dll_functions(dll_obj):
+    """设置DLL函数返回类型。"""
+    dll_obj.InitConnect.restype = ctypes.c_char_p       # 初始化 获取id
+    dll_obj.GetStockListInStr.restype = ctypes.c_char_p  # 获取股票列表
+    dll_obj.GetHISDATsInStr.restype = ctypes.c_char_p   # K线数据
+    dll_obj.GetCWDATAInStr.restype = ctypes.c_char_p    # 复权数据
+    dll_obj.Register_DataTransferFunc.restype = None      # 注册外套回调函数
+    dll_obj.SubscribeGPData.restype = ctypes.c_char_p     # 订阅单股数据
+    dll_obj.SubscribeHQDUpdate.restype = ctypes.c_char_p     # 订阅单股行情更新
+    dll_obj.SetNewOrder.restype = ctypes.c_char_p         # 下单接口
+    dll_obj.GetSTOCKInStr.restype = ctypes.c_char_p       # 获取股票详细信息
+    dll_obj.GetREPORTInStr.restype = ctypes.c_char_p      # 获取行情数据
+    dll_obj.SetResToMain.restype = ctypes.c_char_p        # 获取行情数据
+    dll_obj.GetBlockListInStr.restype = ctypes.c_char_p           # 获取板块列表
+    dll_obj.GetBlockStocksInStr.restype = ctypes.c_char_p         # 获取板块成分股
+    dll_obj.GetTradeCalendarInStr.restype = ctypes.c_char_p    # 获取交易日历数据
+    dll_obj.ReFreshCacheAll.restype = ctypes.c_char_p    # 刷新缓存行情
+    dll_obj.ReFreshCacheKLine.restype = ctypes.c_char_p    # 刷新缓存数据
+    dll_obj.DownLoadFiles.restype = ctypes.c_char_p    # 下载文件
+    dll_obj.UserBlockControl.restype = ctypes.c_char_p    # 自定义板块操作
+    dll_obj.GetProDataInStr.restype = ctypes.c_char_p         # 获取专业数据
+    dll_obj.GetCBINFOInStr.restype = ctypes.c_char_p         # 可转债基础信息
+    dll_obj.GetIPOINFOInStr.restype = ctypes.c_char_p         # 新股申购信息
+    dll_obj.GetUserBlockInStr.restype = ctypes.c_char_p         # 获取自定义板块
+    dll_obj.TdxFuncMain.restype = ctypes.c_char_p         # 通达信内部函数调用入口
+    dll_obj.GetMoreInfoInStr.restype = ctypes.c_char_p         # 获取股票更多信息
+    dll_obj.GetGbInfoInStr.restype = ctypes.c_char_p         # 获取股本信息
+    dll_obj.GetTrackZsETFInfoInStr.restype = ctypes.c_char_p         # 获取跟踪指数的ETF信息
+
+
+def _normalize_dll_path(path_str: str) -> Path:
+    path = Path(path_str).expanduser()
+    if path.is_dir():
+        return path / "TPythClient.dll"
+    return path
+
+
+def _build_dll_candidates(preferred_dll_path: str = "") -> List[Path]:
+    env_dll_path = os.getenv("TPYTHCLIENT_DLL", "").strip()
+    raw_candidates = [
+        preferred_dll_path,
+        env_dll_path,
+        str(DEFAULT_TPYTHCLIENT_DLL_PATH),
+        str(REPO_TPYTHCLIENT_DLL_PATH),
+    ]
+
+    candidates: List[Path] = []
+    seen = set()
+    for raw_path in raw_candidates:
+        if not raw_path:
+            continue
+        candidate = _normalize_dll_path(raw_path)
+        candidate_key = str(candidate).lower()
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
+        candidates.append(candidate)
+    return candidates
+
+
+def _ensure_dll_loaded(preferred_dll_path: str = ""):
+    global dll
+    global _loaded_dll_path
+
+    if dll is not None:
+        return dll
+
+    tried_paths: List[str] = []
+    load_errors: List[str] = []
+
+    for dll_path in _build_dll_candidates(preferred_dll_path):
+        dll_path_str = str(dll_path)
+        tried_paths.append(dll_path_str)
+        if not dll_path.exists():
+            continue
+        try:
+            if hasattr(os, "add_dll_directory"):
+                _dll_dir_handles.append(os.add_dll_directory(str(dll_path.parent)))
+            dll_obj = ctypes.CDLL(dll_path_str)
+            _configure_dll_functions(dll_obj)
+            dll = dll_obj
+            _loaded_dll_path = dll_path_str
+            return dll
+        except OSError as exc:
+            load_errors.append(f"{dll_path_str}: {exc}")
+
+    details = "\n".join(f"- {path}" for path in tried_paths) if tried_paths else "- <none>"
+    error_details = "\n".join(f"- {err}" for err in load_errors)
+    if error_details:
+        raise RuntimeError(
+            "无法加载TPythClient.dll，尝试路径:\n"
+            f"{details}\n"
+            "加载错误:\n"
+            f"{error_details}"
+        )
+    raise RuntimeError(f"无法找到TPythClient.dll，尝试路径:\n{details}")
 
 def _convert_time_format(start_time):
     """
@@ -383,7 +456,7 @@ class tq:
     run_id = -1
     run_mode = -1
     file_name = __file__
-    dll_path = str(global_dll_path)
+    dll_path = str(DEFAULT_TPYTHCLIENT_DLL_PATH)
 
     # 添加finalizer相关
     _finalizer = None
@@ -402,7 +475,7 @@ class tq:
 
     @classmethod
     def _release(cls):
-        if cls._initialized:
+        if cls._initialized and dll is not None:
             dll.CloseConnect(cls.run_id, cls.run_mode)
             cls._initialized = False
 
@@ -423,7 +496,7 @@ class tq:
     @classmethod
     def _auto_close(cls):
         """关闭连接（线程安全版本）"""
-        if cls._initialized:
+        if cls._initialized and dll is not None:
             try:
                 dll.CloseConnect(cls.run_id, cls.run_mode)
                 cls._initialized = False
@@ -478,6 +551,9 @@ class tq:
             if len(cls._connection_path) <= 0:
                 raise RuntimeError("TQ数据接口初始化失败")
             try:
+                _ensure_dll_loaded(cls.dll_path)
+                if _loaded_dll_path:
+                    cls.dll_path = _loaded_dll_path
                 arguments = sys.argv[1:]
                 if len(arguments) == 2:
                     if arguments[0] == '--run_tdx':

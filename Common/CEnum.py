@@ -9,6 +9,7 @@ class DATA_SRC(Enum):
     AKSHARE = auto()
     TUSHARE = auto()
     CACHE_DB = auto()  # 本地缓存数据库
+    TDX = auto()
 
 
 class KL_TYPE(Enum):
