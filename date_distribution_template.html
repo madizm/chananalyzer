@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日期分布统计 - 通用模板</title>
+  <style>
+    :root {
+      --bg: #f3ede3;
+      --bg2: #f8f3ec;
+      --panel: rgba(255, 252, 247, 0.9);
+      --text: #1e1914;
+      --muted: #6a5d4f;
+      --line: rgba(89, 71, 49, 0.16);
+      --up: #bf3f2f;
+      --down: #2a6f65;
+      --warn: #be8a2f;
+      --radius: 16px;
+      --shadow: 0 18px 40px rgba(61, 39, 20, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 5% 0%, rgba(190, 138, 47, 0.16), transparent 25%),
+        radial-gradient(circle at 95% 0%, rgba(42, 111, 101, 0.14), transparent 28%),
+        linear-gradient(180deg, var(--bg2) 0%, var(--bg) 100%);
+      min-height: 100vh;
+    }
+
+    .page {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 24px 16px 36px;
+    }
+
+    .hero,
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 22px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-family: "Georgia", "Noto Serif SC", serif;
+      font-size: clamp(28px, 4vw, 46px);
+      letter-spacing: -0.03em;
+    }
+
+    .sub {
+      margin-top: 10px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .top-grid {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 16px;
+    }
+
+    .panel {
+      padding: 18px;
+    }
+
+    .controls {
+      display: grid;
+      gap: 12px;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    label {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    input[type="file"],
+    select,
+    button,
+    textarea {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fffdf9;
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    input[type="file"],
+    select,
+    button {
+      padding: 9px 12px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 120px;
+      padding: 10px;
+      resize: vertical;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    button {
+      cursor: pointer;
+      background: #17120e;
+      color: #fff8ef;
+      border-color: #17120e;
+    }
+
+    .ghost {
+      background: #fffdf9;
+      color: var(--text);
+      border-color: var(--line);
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.7);
+    }
+
+    .metric .k {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .metric .v {
+      margin-top: 6px;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    .layout {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 16px;
+    }
+
+    .chart {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(34px, 1fr));
+      gap: 8px;
+      min-height: 280px;
+      align-items: end;
+      margin-top: 14px;
+    }
+
+    .bar-wrap {
+      min-height: 200px;
+      display: flex;
+      flex-direction: column;
+      justify-content: end;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .bar-track {
+      width: 100%;
+      height: 150px;
+      border-radius: 10px;
+      border: 1px solid rgba(89, 71, 49, 0.12);
+      background: rgba(255, 255, 255, 0.55);
+      display: flex;
+      align-items: end;
+      overflow: hidden;
+    }
+
+    .bar {
+      width: 100%;
+      border-radius: 10px 10px 8px 8px;
+      min-height: 4px;
+      background: var(--warn);
+      transition: 0.2s ease;
+    }
+
+    .bar-date {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .bar-count {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .list {
+      margin-top: 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 10px;
+      background: rgba(255, 255, 255, 0.72);
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .table-wrap {
+      margin-top: 16px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.74);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid rgba(89, 71, 49, 0.1);
+      text-align: left;
+      font-size: 13px;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: #f7f1e7;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .muted { color: var(--muted); }
+    .up { color: var(--up); }
+    .down { color: var(--down); }
+
+    .type-cell {
+      position: relative;
+    }
+
+    .type-cell-summary {
+      cursor: help;
+      border-bottom: 1px dashed rgba(89, 71, 49, 0.35);
+    }
+
+    .type-tooltip {
+      position: absolute;
+      z-index: 30;
+      left: 0;
+      top: calc(100% + 6px);
+      width: max-content;
+      max-width: min(460px, 82vw);
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(89, 71, 49, 0.22);
+      background: rgba(255, 252, 247, 0.98);
+      box-shadow: 0 10px 24px rgba(61, 39, 20, 0.15);
+      line-height: 1.45;
+      font-size: 12px;
+      color: var(--text);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(4px);
+      transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s ease;
+      pointer-events: none;
+      white-space: normal;
+    }
+
+    .type-cell:hover .type-tooltip,
+    .type-cell:focus-within .type-tooltip {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+
+    .type-tooltip-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .type-tooltip-line {
+      margin-top: 3px;
+      color: var(--muted);
+    }
+
+    .tip {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    @media (max-width: 1050px) {
+      .top-grid,
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <h1>日期分布统计通用模板</h1>
+      <p class="sub">上传任意包含日期字段和 return_pct 的 CSV，自动统计日期分布。建议至少包含字段: signal_date 或 entry_date 或 exit_date，bsp_type，return_pct，is_win。</p>
+      <div class="tip">默认优先使用 signal_date 作为日期口径；也可以手动切换。</div>
+    </section>
+
+    <section class="top-grid">
+      <article class="panel controls">
+        <div class="row">
+          <label for="csvFile">CSV 文件</label>
+          <input id="csvFile" type="file" accept=".csv,text/csv">
+          <button id="loadFileBtn" class="ghost" type="button">读取文件</button>
+        </div>
+        <div class="row">
+          <label for="csvText">或粘贴 CSV 文本</label>
+          <button id="loadTextBtn" type="button">解析文本</button>
+          <button id="clearBtn" class="ghost" type="button">清空</button>
+        </div>
+        <textarea id="csvText" placeholder="粘贴 CSV 文本到这里，然后点击 解析文本"></textarea>
+        <div class="row">
+          <label for="dateField">日期字段</label>
+          <select id="dateField"></select>
+          <label for="typeField">类型过滤</label>
+          <select id="typeField"></select>
+        </div>
+        <div id="status" class="tip">等待加载 CSV 数据。</div>
+      </article>
+
+      <article class="panel">
+        <div class="metric-grid">
+          <div class="metric">
+            <div class="k">样本数</div>
+            <div class="v" id="mTotal">-</div>
+          </div>
+          <div class="metric">
+            <div class="k">交易日数</div>
+            <div class="v" id="mDays">-</div>
+          </div>
+          <div class="metric">
+            <div class="k">胜率</div>
+            <div class="v" id="mWin">-</div>
+          </div>
+          <div class="metric">
+            <div class="k">平均收益</div>
+            <div class="v" id="mAvg">-</div>
+          </div>
+        </div>
+        <div class="tip" id="metaTip">-</div>
+      </article>
+    </section>
+
+    <section class="layout">
+      <article class="panel">
+        <strong id="chartTitle">日期分布</strong>
+        <div class="tip">柱高 = 当天样本数；颜色 = 平均收益方向（红正绿负）。</div>
+        <div id="chart" class="chart"></div>
+      </article>
+
+      <article class="panel">
+        <strong>高频日期 Top 8</strong>
+        <div id="topDays" class="list"></div>
+        <div style="height:10px"></div>
+        <strong>低表现日期 Top 8</strong>
+        <div id="lowDays" class="list"></div>
+      </article>
+    </section>
+
+    <section class="panel" style="margin-top:16px;">
+      <strong>逐日统计明细</strong>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th>样本数</th>
+              <th>胜率</th>
+              <th>平均收益</th>
+              <th>最好</th>
+              <th>最差</th>
+              <th>类型分布</th>
+            </tr>
+          </thead>
+          <tbody id="statsBody">
+            <tr><td colspan="7" class="muted">暂无数据</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      rawRows: [],
+      rows: [],
+      dateField: "",
+      typeFilter: "all",
+      availableDateFields: [],
+      availableTypes: [],
+    };
+
+    const RETURN_BINS = [
+      { key: "lt_neg2", label: "<-2%" },
+      { key: "neg2_to_0", label: "-2%~0%" },
+      { key: "zero_to_2", label: "0%~2%" },
+      { key: "ge_2", label: ">=2%" },
+    ];
+
+    const el = {
+      csvFile: document.getElementById("csvFile"),
+      csvText: document.getElementById("csvText"),
+      loadFileBtn: document.getElementById("loadFileBtn"),
+      loadTextBtn: document.getElementById("loadTextBtn"),
+      clearBtn: document.getElementById("clearBtn"),
+      dateField: document.getElementById("dateField"),
+      typeField: document.getElementById("typeField"),
+      status: document.getElementById("status"),
+      mTotal: document.getElementById("mTotal"),
+      mDays: document.getElementById("mDays"),
+      mWin: document.getElementById("mWin"),
+      mAvg: document.getElementById("mAvg"),
+      metaTip: document.getElementById("metaTip"),
+      chartTitle: document.getElementById("chartTitle"),
+      chart: document.getElementById("chart"),
+      topDays: document.getElementById("topDays"),
+      lowDays: document.getElementById("lowDays"),
+      statsBody: document.getElementById("statsBody"),
+    };
+
+    function setStatus(text, isError) {
+      el.status.textContent = text;
+      el.status.className = isError ? "tip down" : "tip";
+    }
+
+    function parseCsv(text) {
+      const rows = [];
+      let row = [];
+      let value = "";
+      let inQuotes = false;
+
+      for (let i = 0; i < text.length; i += 1) {
+        const ch = text[i];
+        const next = text[i + 1];
+        if (ch === '"') {
+          if (inQuotes && next === '"') {
+            value += '"';
+            i += 1;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (ch === "," && !inQuotes) {
+          row.push(value);
+          value = "";
+        } else if ((ch === "\n" || ch === "\r") && !inQuotes) {
+          if (ch === "\r" && next === "\n") i += 1;
+          row.push(value);
+          if (row.some((x) => x !== "")) rows.push(row);
+          row = [];
+          value = "";
+        } else {
+          value += ch;
+        }
+      }
+
+      if (value || row.length) {
+        row.push(value);
+        rows.push(row);
+      }
+
+      if (rows.length < 2) {
+        throw new Error("CSV 至少需要表头和一行数据。");
+      }
+
+      const header = rows[0].map((h) => h.trim());
+      return rows.slice(1).map((cells) => {
+        const obj = {};
+        header.forEach((h, idx) => {
+          obj[h] = (cells[idx] || "").trim();
+        });
+        return obj;
+      });
+    }
+
+    function pickDateFields(firstRow) {
+      const priority = ["signal_date", "entry_date", "exit_date", "date", "trade_date"];
+      const keys = Object.keys(firstRow || {});
+      const inPriority = priority.filter((k) => keys.includes(k));
+      const fuzzy = keys.filter((k) => /date|day/i.test(k) && !inPriority.includes(k));
+      return [...inPriority, ...fuzzy];
+    }
+
+    function normalizeRows(raw) {
+      return raw
+        .map((r) => ({
+          ...r,
+          return_pct: Number(r.return_pct),
+          is_win: String(r.is_win || "").toLowerCase() === "true",
+          bsp_type: r.bsp_type || "unknown",
+        }))
+        .filter((r) => Number.isFinite(r.return_pct));
+    }
+
+    function toPercent(v) {
+      return `${v.toFixed(2)}%`;
+    }
+
+    function toRate(v) {
+      return `${(v * 100).toFixed(1)}%`;
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function pickReturnBin(value) {
+      if (value < -2) return "lt_neg2";
+      if (value < 0) return "neg2_to_0";
+      if (value < 2) return "zero_to_2";
+      return "ge_2";
+    }
+
+    function buildTypeDistributionTooltip(typeReturnBins) {
+      const typeEntries = Object.entries(typeReturnBins)
+        .sort((a, b) => b[1].total - a[1].total);
+
+      const blocks = typeEntries.map(([type, info]) => {
+        const total = info.total || 1;
+        const parts = RETURN_BINS.map((bin) => {
+          const count = info.bins[bin.key] || 0;
+          const rate = toRate(count / total);
+          return `${bin.label}: ${count} (${rate})`;
+        }).join(" | ");
+        return `
+          <div class="type-tooltip-title">${escapeHtml(type)} (${info.total}条)</div>
+          <div class="type-tooltip-line">${parts}</div>
+        `;
+      }).join("");
+
+      return `
+        <div class="type-tooltip">
+          ${blocks}
+        </div>
+      `;
+    }
+
+    function getFilteredRows() {
+      return state.typeFilter === "all"
+        ? state.rows
+        : state.rows.filter((r) => r.bsp_type === state.typeFilter);
+    }
+
+    function summarizeByDate(rows, dateField) {
+      const map = new Map();
+      rows.forEach((r) => {
+        const d = r[dateField];
+        if (!d) return;
+        if (!map.has(d)) map.set(d, []);
+        map.get(d).push(r);
+      });
+      return Array.from(map.entries())
+        .map(([date, items]) => {
+          const count = items.length;
+          const wins = items.filter((i) => i.is_win).length;
+          const avg = items.reduce((s, i) => s + i.return_pct, 0) / count;
+          const best = Math.max(...items.map((i) => i.return_pct));
+          const worst = Math.min(...items.map((i) => i.return_pct));
+          const types = items.reduce((acc, i) => {
+            acc[i.bsp_type] = (acc[i.bsp_type] || 0) + 1;
+            return acc;
+          }, {});
+          const typeReturnBins = items.reduce((acc, i) => {
+            const t = i.bsp_type || "unknown";
+            if (!acc[t]) {
+              acc[t] = {
+                total: 0,
+                bins: {
+                  lt_neg2: 0,
+                  neg2_to_0: 0,
+                  zero_to_2: 0,
+                  ge_2: 0,
+                },
+              };
+            }
+            acc[t].total += 1;
+            acc[t].bins[pickReturnBin(i.return_pct)] += 1;
+            return acc;
+          }, {});
+          return { date, count, wins, winRate: wins / count, avg, best, worst, types, typeReturnBins };
+        })
+        .sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    function renderSelectors() {
+      el.dateField.innerHTML = state.availableDateFields
+        .map((f) => `<option value="${f}">${f}</option>`)
+        .join("");
+      el.dateField.value = state.dateField;
+
+      const typeOptions = ["all", ...state.availableTypes];
+      el.typeField.innerHTML = typeOptions
+        .map((t) => `<option value="${t}">${t === "all" ? "全部类型" : t}</option>`)
+        .join("");
+      el.typeField.value = state.typeFilter;
+    }
+
+    function renderStats() {
+      const filtered = getFilteredRows();
+      const daily = summarizeByDate(filtered, state.dateField);
+
+      if (!daily.length) {
+        el.mTotal.textContent = "0";
+        el.mDays.textContent = "0";
+        el.mWin.textContent = "-";
+        el.mAvg.textContent = "-";
+        el.chart.innerHTML = "";
+        el.topDays.innerHTML = "";
+        el.lowDays.innerHTML = "";
+        el.statsBody.innerHTML = '<tr><td colspan="7" class="muted">当前过滤条件下无数据</td></tr>';
+        el.metaTip.textContent = "请调整日期字段或类型过滤。";
+        return;
+      }
+
+      const total = filtered.length;
+      const totalWins = filtered.filter((r) => r.is_win).length;
+      const avgAll = filtered.reduce((s, r) => s + r.return_pct, 0) / total;
+      const peak = [...daily].sort((a, b) => b.count - a.count)[0];
+
+      el.mTotal.textContent = String(total);
+      el.mDays.textContent = String(daily.length);
+      el.mWin.textContent = toRate(totalWins / total);
+      el.mAvg.textContent = toPercent(avgAll);
+      el.mAvg.className = `v ${avgAll >= 0 ? "up" : "down"}`;
+      el.metaTip.textContent = `日期字段: ${state.dateField}，峰值日期: ${peak.date} (${peak.count} 条)`;
+
+      el.chartTitle.textContent = `${state.dateField} 日期分布`;
+      const maxCount = Math.max(...daily.map((d) => d.count));
+      el.chart.innerHTML = daily.map((d) => {
+        const h = Math.max((d.count / maxCount) * 100, 4);
+        const color = d.avg >= 0 ? "var(--up)" : "var(--down)";
+        return `
+          <div class="bar-wrap" title="${d.date} | 样本 ${d.count} | 胜率 ${toRate(d.winRate)} | 均值 ${toPercent(d.avg)}">
+            <div class="bar-count">${d.count}</div>
+            <div class="bar-track">
+              <div class="bar" style="height:${h}%; background:${color};"></div>
+            </div>
+            <div class="bar-date">${d.date.slice(-5)}</div>
+          </div>
+        `;
+      }).join("");
+
+      const top = [...daily].sort((a, b) => b.count - a.count).slice(0, 8);
+      el.topDays.innerHTML = top.map((d) => `
+        <div class="item">
+          <span>${d.date}</span>
+          <span>${d.count} 条 / ${toRate(d.winRate)}</span>
+        </div>
+      `).join("");
+
+      const low = [...daily].sort((a, b) => a.avg - b.avg).slice(0, 8);
+      el.lowDays.innerHTML = low.map((d) => `
+        <div class="item">
+          <span>${d.date}</span>
+          <span class="${d.avg >= 0 ? "up" : "down"}">${toPercent(d.avg)}</span>
+        </div>
+      `).join("");
+
+      el.statsBody.innerHTML = daily.map((d) => {
+        const ts = Object.entries(d.types)
+          .sort((a, b) => b[1] - a[1])
+          .map(([t, c]) => `${t}:${c}`)
+          .join(" / ");
+        const tooltipHtml = buildTypeDistributionTooltip(d.typeReturnBins || {});
+        return `
+          <tr>
+            <td>${d.date}</td>
+            <td>${d.count}</td>
+            <td>${toRate(d.winRate)}</td>
+            <td class="${d.avg >= 0 ? "up" : "down"}">${toPercent(d.avg)}</td>
+            <td class="up">${toPercent(d.best)}</td>
+            <td class="down">${toPercent(d.worst)}</td>
+            <td class="type-cell"><span tabindex="0" class="type-cell-summary">${ts}</span>${tooltipHtml}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function applyData(rawRows) {
+      if (!rawRows.length) {
+        throw new Error("没有读取到数据行。");
+      }
+
+      const normalized = normalizeRows(rawRows);
+      if (!normalized.length) {
+        throw new Error("没有可用数据。请确认 return_pct 字段是数值。\n");
+      }
+
+      const dates = pickDateFields(normalized[0]);
+      if (!dates.length) {
+        throw new Error("未识别到日期字段。请至少包含 signal_date / entry_date / exit_date 之一。\n");
+      }
+
+      state.rawRows = rawRows;
+      state.rows = normalized;
+      state.availableDateFields = dates;
+      state.dateField = dates.includes(state.dateField) ? state.dateField : dates[0];
+      state.availableTypes = Array.from(new Set(normalized.map((r) => r.bsp_type))).sort((a, b) => a.localeCompare(b));
+      state.typeFilter = state.availableTypes.includes(state.typeFilter) ? state.typeFilter : "all";
+
+      renderSelectors();
+      renderStats();
+      setStatus(`已加载 ${normalized.length} 条数据，检测到日期字段: ${dates.join(", ")}`);
+    }
+
+    async function loadFromFile() {
+      const file = el.csvFile.files[0];
+      if (!file) {
+        setStatus("请先选择 CSV 文件。", true);
+        return;
+      }
+      const text = await file.text();
+      const parsed = parseCsv(text);
+      applyData(parsed);
+    }
+
+    function loadFromText() {
+      const text = el.csvText.value.trim();
+      if (!text) {
+        setStatus("请先粘贴 CSV 文本。", true);
+        return;
+      }
+      const parsed = parseCsv(text);
+      applyData(parsed);
+    }
+
+    function clearAll() {
+      state.rawRows = [];
+      state.rows = [];
+      state.dateField = "";
+      state.typeFilter = "all";
+      state.availableDateFields = [];
+      state.availableTypes = [];
+      el.csvFile.value = "";
+      el.csvText.value = "";
+      el.dateField.innerHTML = "";
+      el.typeField.innerHTML = "";
+      el.chart.innerHTML = "";
+      el.topDays.innerHTML = "";
+      el.lowDays.innerHTML = "";
+      el.statsBody.innerHTML = '<tr><td colspan="7" class="muted">暂无数据</td></tr>';
+      el.mTotal.textContent = "-";
+      el.mDays.textContent = "-";
+      el.mWin.textContent = "-";
+      el.mAvg.textContent = "-";
+      el.metaTip.textContent = "-";
+      setStatus("等待加载 CSV 数据。");
+    }
+
+    el.loadFileBtn.addEventListener("click", async () => {
+      try {
+        await loadFromFile();
+      } catch (err) {
+        setStatus(`读取文件失败: ${err.message}`, true);
+      }
+    });
+
+    el.loadTextBtn.addEventListener("click", () => {
+      try {
+        loadFromText();
+      } catch (err) {
+        setStatus(`解析文本失败: ${err.message}`, true);
+      }
+    });
+
+    el.clearBtn.addEventListener("click", clearAll);
+
+    el.dateField.addEventListener("change", () => {
+      state.dateField = el.dateField.value;
+      renderStats();
+    });
+
+    el.typeField.addEventListener("change", () => {
+      state.typeFilter = el.typeField.value;
+      renderStats();
+    });
+  </script>
+</body>
+</html>
