@@ -240,12 +240,12 @@ def main():
     parser.add_argument("--codes", nargs="+", help="指定股票代码")
     parser.add_argument("--all", action="store_true", help="缓存所有 A 股")
     parser.add_argument("--limit", type=int, help="限制数量")
-    parser.add_argument("--begin", default="2026-03-20", help="开始日期")
+    parser.add_argument("--begin", default="2026-01-20", help="开始日期")
     parser.add_argument("--end", default=None, help="结束日期（默认今天）")
     parser.add_argument(
         "--delay",
         type=float,
-        default=0.3,
+        default=0.0,
         help="每只股票之间的延迟秒数（默认0.3秒，避免触发频次限制）",
     )
     parser.add_argument(
