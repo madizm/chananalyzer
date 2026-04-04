@@ -6,7 +6,7 @@ K线数据管理器
 
 import os
 from datetime import datetime, timedelta
-from typing import Iterable, Optional, List
+from typing import Callable, Iterable, Optional, List
 import logging
 
 from sqlalchemy.orm import Session
@@ -55,7 +55,7 @@ class DataManager:
         kl_type: KL_TYPE,
         begin_date: str,
         end_date: str,
-        data_src_fetcher: callable = None,
+        data_src_fetcher: Optional[Callable] = None,
     ) -> Iterable[CKLine_Unit]:
         """
         获取 K 线数据（优先从缓存）
@@ -81,13 +81,22 @@ class DataManager:
         cached_data = self._get_from_cache(code, kl_type_str, begin_date, end_date)
 
         # 2. 判断是否需要更新
-        if cached_data and self._is_fresh(cached_data, end_date):
+        if cached_data and self._is_fresh(cached_data, begin_date, end_date):
             logger.info(f"[{code} {kl_type_str}] 使用缓存数据")
             return self._to_klu_list(cached_data)
 
         # 3. 获取增量数据
-        last_date = self._get_last_date(cached_data)
-        fetch_start = last_date if last_date else begin_date
+        request_begin_dt = self._parse_request_datetime(begin_date, is_end=False)
+        if cached_data and request_begin_dt is not None:
+            first_cached_date = cached_data[0].timestamp.date()
+            if first_cached_date > request_begin_dt.date():
+                fetch_start = begin_date
+            else:
+                last_date = self._get_last_date(cached_data)
+                fetch_start = last_date if last_date else begin_date
+        else:
+            last_date = self._get_last_date(cached_data)
+            fetch_start = last_date if last_date else begin_date
 
         logger.info(
             f"[{code} {kl_type_str}] 从 API 获取数据: {fetch_start} ~ {end_date}"
@@ -119,46 +128,45 @@ class DataManager:
             )
 
             # 添加日期范围过滤
-            if begin_date:
-                begin_dt = datetime.fromisoformat(
-                    begin_date.replace("-", "").replace(
-                        lambda x: (
-                            x[0] + "-" + x[1:3] + "-" + x[3:5] if len(x) == 8 else x
-                        )
-                    )
-                    if "-" not in begin_date
-                    else begin_date
-                )
-                # 简化处理：这里假设输入是 YYYY-MM-DD 或 YYYYMMDD 格式
-                # 实际使用时可以优化
-            if end_date:
-                # 同样简化
-                pass
+            begin_dt = self._parse_request_datetime(begin_date, is_end=False)
+            if begin_dt is not None:
+                query = query.filter(KLineData.timestamp >= begin_dt)
+
+            end_dt = self._parse_request_datetime(end_date, is_end=True)
+            if end_dt is not None:
+                query = query.filter(KLineData.timestamp <= end_dt)
 
             # 按时间排序
             query = query.order_by(KLineData.timestamp)
 
-            results = query.all()
+            return query.all()
 
-            # 在内存中过滤日期范围（因为 date 字段格式复杂）
-            if begin_date or end_date:
-                filtered = []
-                for row in results:
-                    # 简化：直接返回所有，后续在应用层过滤
-                    filtered.append(row)
-                results = filtered
-
-            return results
-
-    def _is_fresh(self, cached_data: List[KLineData], request_end_date: str) -> bool:
+    def _is_fresh(
+        self,
+        cached_data: List[KLineData],
+        request_begin_date: Optional[str],
+        request_end_date: str,
+    ) -> bool:
         """判断缓存数据是否新鲜"""
         if not cached_data:
             return False
 
+        first_row = cached_data[0]
         last_row = cached_data[-1]
+        first_date = first_row.timestamp.date()
         last_date = last_row.timestamp.date()
-        request_end = datetime.fromisoformat(request_end_date).date()
+        request_begin_dt = self._parse_request_datetime(request_begin_date, is_end=False)
+        request_end_dt = self._parse_request_datetime(request_end_date, is_end=True)
+
+        if request_end_dt is None:
+            return False
+
+        request_end = request_end_dt.date()
         today = datetime.now().date()
+
+        # 如果缓存起始晚于请求起始，不能直接复用缓存。
+        if request_begin_dt is not None and first_date > request_begin_dt.date():
+            return False
 
         # 如果缓存还没覆盖到请求的结束日期，不能直接复用缓存。
         if last_date < request_end:
@@ -195,6 +203,38 @@ class DataManager:
                 return True
 
         return False
+
+    @staticmethod
+    def _parse_request_datetime(
+        value: Optional[str], is_end: bool = False
+    ) -> Optional[datetime]:
+        """解析请求日期，兼容 YYYY-MM-DD / YYYYMMDD / 含时间格式。"""
+        if not value:
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        normalized = text.replace("/", "-")
+        patterns = [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+            "%Y%m%d%H%M%S",
+            "%Y%m%d",
+        ]
+
+        for pattern in patterns:
+            try:
+                dt = datetime.strptime(normalized, pattern)
+                if pattern in ("%Y-%m-%d", "%Y%m%d") and is_end:
+                    return dt + timedelta(days=1) - timedelta(microseconds=1)
+                return dt
+            except ValueError:
+                continue
+
+        return None
 
     def _get_last_date(self, cached_data: List[KLineData]) -> Optional[str]:
         """获取缓存中最新数据的日期"""

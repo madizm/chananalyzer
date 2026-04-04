@@ -63,8 +63,14 @@ def _create_item_dict(row: tuple, autype: AUTYPE) -> dict:
     except ValueError:
         dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
 
+    kl_type = row[1]
+    if kl_type in ("1M", "5M", "15M", "30M", "60M"):
+        ctime = CTime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, auto=False)
+    else:
+        ctime = CTime(dt.year, dt.month, dt.day, 0, 0)
+
     item = {
-        DATA_FIELD.FIELD_TIME: CTime(dt.year, dt.month, dt.day, 0, 0),
+        DATA_FIELD.FIELD_TIME: ctime,
         DATA_FIELD.FIELD_OPEN: float(row[4]),   # open
         DATA_FIELD.FIELD_HIGH: float(row[5]),   # high
         DATA_FIELD.FIELD_LOW: float(row[6]),    # low
@@ -261,6 +267,8 @@ class CCacheDBAPI(CCommonStockApi):
             return "WEEK"
         elif self.k_type == KL_TYPE.K_MON:
             return "MON"
+        elif self.k_type == KL_TYPE.K_30M:
+            return "30M"
         else:
             raise ValueError(f"缓存数据库不支持 {self.k_type} 级别的 K 线数据")
 
