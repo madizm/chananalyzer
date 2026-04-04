@@ -52,3 +52,5 @@ web/cache/
 .DS_Store
 *.swp
 *.swo
+
+outputs/
