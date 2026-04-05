@@ -423,6 +423,8 @@ def main() -> None:
     summary["buy_types"] = args.buy_types
     summary["entry_mode"] = args.entry_mode
     summary["stop_loss_pct"] = args.stop_loss_pct
+    summary["begin"] = args.begin
+    summary["end"] = args.end
     summary["shift_bars"] = 1
     summary["exec_policy"] = f"{args.entry_mode}_shift_1_bar"
     summary["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -451,5 +453,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     # python scripts/backtest_day_up_30m_signal.py --begin 2025-12-25 --end 2026-03-03 --horizon 3 --entry-mode next_open --output-dir outputs --all
+    # python scripts/backtest_day_up_30m_signal.py --begin 2026-02-09 --end 2026-04-04 --horizon 3 --entry-mode next_open --output-dir outputs --all
     # python scripts/backtest_day_up_30m_signal.py --limit 200 --begin 2026-03-20 --end 2026-03-27 --horizon 5 --entry-mode next_open --output-dir outputs
     main()
