@@ -47,10 +47,12 @@ def _load_day_ma_from_db(code: str, as_of_day: str, period: int) -> Optional[flo
 
 def is_day_above_ma(snapshot: CChan, day_idx: int, code: str, ma_period: int = 50) -> bool:
     day_kl = snapshot[day_idx]
-    if len(day_kl) == 0:
+    # step_load 在 [DAY, 30M] 下按日线步进；
+    # 对日内 30M 信号，必须用“上一根已完成日线”判断，避免使用当日收盘价造成未来函数。
+    if len(day_kl) < 2:
         return False
 
-    latest_klu = day_kl[-1][-1]
+    latest_klu = day_kl[-2][-1]
     ma_value = _load_day_ma_from_db(
         code=code,
         as_of_day=latest_klu.time.to_str(),
