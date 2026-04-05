@@ -38,6 +38,11 @@ class SignalEvent:
     code: str
     signal_time: str
     signal_date: str
+    observation_time: str
+    observation_date: str
+    observation_price: float
+    signal_age_days: int
+    signal_deviation_pct: float
     bsp_type: str
     signal_price: float
 
@@ -117,6 +122,8 @@ def collect_signals_by_replay(
     signal_begin: Optional[str],
     signal_end: Optional[str],
     bi_strict: bool,
+    max_signal_age_days: int,
+    max_signal_deviation_pct: Optional[float],
 ) -> List[SignalEvent]:
     config = CChanConfig(
         {
@@ -149,21 +156,56 @@ def collect_signals_by_replay(
     events: List[SignalEvent] = []
 
     for snapshot in chan.step_load():
+        day_kl = snapshot[day_idx]
+        m30_kl = snapshot[m30_idx]
+        if len(day_kl) == 0:
+            continue
+        if len(m30_kl) == 0:
+            continue
+        cur_day_time = day_kl[-1][-1].time
+        observation_dt = datetime(
+            cur_day_time.year,
+            cur_day_time.month,
+            cur_day_time.day,
+            cur_day_time.hour,
+            cur_day_time.minute,
+        )
+
         hit = detect_day_up_30m_any_buy(
             snapshot=snapshot,
             day_idx=day_idx,
             m30_idx=m30_idx,
+            observation_time=observation_dt,
             buy_types=buy_types,
         )
         if hit is None:
             continue
 
-        signal_dt = hit.signal_time
-        if begin_dt and signal_dt < begin_dt:
-            continue
-        if end_dt and signal_dt > end_dt:
+        # 交易日新鲜度过滤：信号观测时间与BSP形成时间的交易日间隔不能过大。
+        signal_date = hit.signal_time.date()
+        observation_date = hit.observation_time.date()
+        day_dates_seen = [
+            datetime(klc[0].time.year, klc[0].time.month, klc[0].time.day).date()
+            for klc in day_kl
+        ]
+        signal_age_days = sum(1 for d in day_dates_seen if signal_date < d <= observation_date)
+        if signal_age_days > max_signal_age_days:
             continue
 
+        observation_price = float(m30_kl[-1][-1].close)
+        signal_deviation_pct = abs((observation_price - hit.signal_price) / hit.signal_price * 100)
+        if (
+            max_signal_deviation_pct is not None
+            and signal_deviation_pct > max_signal_deviation_pct
+        ):
+            continue
+
+        if begin_dt and hit.observation_time < begin_dt:
+            continue
+        if end_dt and hit.observation_time > end_dt:
+            continue
+
+        signal_dt = hit.signal_time
         key = (signal_dt.isoformat(), hit.bsp_type)
         if key in seen_keys:
             continue
@@ -174,6 +216,11 @@ def collect_signals_by_replay(
                 code=code,
                 signal_time=signal_dt.strftime("%Y-%m-%d %H:%M:%S"),
                 signal_date=signal_dt.strftime("%Y-%m-%d"),
+                observation_time=hit.observation_time.strftime("%Y-%m-%d %H:%M:%S"),
+                observation_date=hit.observation_date,
+                observation_price=observation_price,
+                signal_age_days=signal_age_days,
+                signal_deviation_pct=signal_deviation_pct,
                 bsp_type=hit.bsp_type,
                 signal_price=hit.signal_price,
             )
@@ -199,11 +246,11 @@ def evaluate_signal_events(
     rows: List[Dict[str, Any]] = []
 
     for event in events:
-        signal_date = _parse_dt(event.signal_date).date()
+        observation_date = _parse_dt(event.observation_date).date()
 
         entry_idx = None
         for i, d in enumerate(day_dates):
-            if d > signal_date:
+            if d > observation_date:
                 entry_idx = i
                 break
         if entry_idx is None:
@@ -238,6 +285,11 @@ def evaluate_signal_events(
             "code": event.code,
             "signal_time": event.signal_time,
             "signal_date": event.signal_date,
+            "observation_time": event.observation_time,
+            "observation_date": event.observation_date,
+            "observation_price": round(event.observation_price, 4),
+            "signal_age_days": event.signal_age_days,
+            "signal_deviation_pct": round(event.signal_deviation_pct, 4),
             "bsp_type": event.bsp_type,
             "signal_price": round(event.signal_price, 4),
             "entry_date": day_dates[entry_idx].strftime("%Y-%m-%d"),
@@ -302,6 +354,11 @@ def save_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
             "code",
             "signal_time",
             "signal_date",
+            "observation_time",
+            "observation_date",
+            "observation_price",
+            "signal_age_days",
+            "signal_deviation_pct",
             "bsp_type",
             "signal_price",
             "entry_date",
@@ -356,6 +413,18 @@ def parse_args() -> argparse.Namespace:
         default=5.0,
         help="强制止损百分比，默认 5.0；设为 0 表示关闭止损",
     )
+    parser.add_argument(
+        "--max-signal-age-days",
+        type=int,
+        default=2,
+        help="信号最大允许账龄(交易日)，默认 2",
+    )
+    parser.add_argument(
+        "--max-signal-deviation-pct",
+        type=float,
+        default=None,
+        help="观测时价格相对信号价的最大偏离百分比；不设置则不限制",
+    )
     parser.add_argument("--output-dir", default="outputs", help="输出目录")
     parser.add_argument("--bi-strict", action="store_true", help="启用严格笔")
     return parser.parse_args()
@@ -368,6 +437,10 @@ def main() -> None:
         raise ValueError("--horizon 必须大于 0")
     if args.stop_loss_pct < 0:
         raise ValueError("--stop-loss-pct 不能小于 0")
+    if args.max_signal_age_days < 0:
+        raise ValueError("--max-signal-age-days 不能小于 0")
+    if args.max_signal_deviation_pct is not None and args.max_signal_deviation_pct < 0:
+        raise ValueError("--max-signal-deviation-pct 不能小于 0")
 
     if args.codes:
         stock_codes = args.codes
@@ -379,8 +452,13 @@ def main() -> None:
         return
 
     print(f"开始回测，股票数量: {len(stock_codes)}")
+    deviation_text = (
+        f"，信号偏离<={args.max_signal_deviation_pct}%"
+        if args.max_signal_deviation_pct is not None
+        else ""
+    )
     print(
-        f"规则: 日线向上 + 30M任意买点({', '.join(args.buy_types)})，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%"
+        f"规则: 日线向上 + 30M任意买点({', '.join(args.buy_types)})，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%，信号账龄<={args.max_signal_age_days}个交易日{deviation_text}"
     )
 
     all_rows: List[Dict[str, Any]] = []
@@ -396,6 +474,8 @@ def main() -> None:
                 signal_begin=args.signal_begin,
                 signal_end=args.signal_end,
                 bi_strict=args.bi_strict,
+                max_signal_age_days=args.max_signal_age_days,
+                max_signal_deviation_pct=args.max_signal_deviation_pct,
             )
             total_signals += len(events)
             if not events:
@@ -423,6 +503,8 @@ def main() -> None:
     summary["buy_types"] = args.buy_types
     summary["entry_mode"] = args.entry_mode
     summary["stop_loss_pct"] = args.stop_loss_pct
+    summary["max_signal_age_days"] = args.max_signal_age_days
+    summary["max_signal_deviation_pct"] = args.max_signal_deviation_pct
     summary["begin"] = args.begin
     summary["end"] = args.end
     summary["shift_bars"] = 1

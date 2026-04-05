@@ -15,6 +15,8 @@ DEFAULT_BUY_TYPES = ["1", "1p", "2", "2s", "3a", "3b"]
 class StrategyHit:
     signal_time: datetime
     signal_date: str
+    observation_time: datetime
+    observation_date: str
     bsp_type: str
     signal_price: float
 
@@ -37,6 +39,7 @@ def detect_day_up_30m_any_buy(
     snapshot: CChan,
     day_idx: int,
     m30_idx: int,
+    observation_time: datetime,
     buy_types: Optional[Iterable[str]] = None,
 ) -> Optional[StrategyHit]:
     type_set = set(buy_types or DEFAULT_BUY_TYPES)
@@ -67,6 +70,8 @@ def detect_day_up_30m_any_buy(
     return StrategyHit(
         signal_time=signal_dt,
         signal_date=signal_dt.strftime("%Y-%m-%d"),
+        observation_time=observation_time,
+        observation_date=observation_time.strftime("%Y-%m-%d"),
         bsp_type=bsp.type2str(),
         signal_price=float(bsp.klu.close),
     )
