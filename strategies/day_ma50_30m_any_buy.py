@@ -45,6 +45,30 @@ def _load_day_ma_from_db(code: str, as_of_day: str, period: int) -> Optional[flo
     return sum(closes) / len(closes)
 
 
+def _load_latest_day_close_from_db(code: str, as_of_day: str) -> Optional[float]:
+    if not DB_PATH.exists():
+        return None
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT close
+        FROM kline_data
+        WHERE code = ? AND kl_type = 'DAY' AND date <= ?
+        ORDER BY date DESC
+        LIMIT 1
+        """,
+        (code, as_of_day),
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+    return float(row[0])
+
+
 def is_day_above_ma(snapshot: CChan, day_idx: int, code: str, ma_period: int = 50) -> bool:
     day_kl = snapshot[day_idx]
     # step_load 在 [DAY, 30M] 下按日线步进；
@@ -61,7 +85,14 @@ def is_day_above_ma(snapshot: CChan, day_idx: int, code: str, ma_period: int = 5
     if ma_value is None:
         return False
 
-    return float(latest_klu.close) > float(ma_value)
+    latest_close = _load_latest_day_close_from_db(
+        code=code,
+        as_of_day=latest_klu.time.to_str(),
+    )
+    if latest_close is None:
+        return False
+
+    return latest_close > float(ma_value)
 
 
 def detect_day_ma_30m_any_buy(
