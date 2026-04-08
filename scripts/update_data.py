@@ -10,6 +10,9 @@ K线数据更新脚本
     # 更新所有已缓存的股票
     python -m scripts.update_data --all --data-source baostock --kl-types DAY
 
+    # 使用 TDX 更新所有已缓存的股票
+    python -m scripts.update_data --all --data-source tdx --kl-types DAY 30M
+
     # 使用 BaoStock 更新
     python -m scripts.update_data --codes 000001 --data-source baostock
 
@@ -25,7 +28,7 @@ import logging
 import os
 import sys
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple, cast
 
 # ==================== 修复 tushare 权限问题 ====================
 # 强制使用 /tmp 目录存储 token，避免云服务器权限问题
@@ -88,6 +91,7 @@ from Common.CEnum import AUTYPE, KL_TYPE
 from ChanAnalyzer.database import get_db, init_db, KLineData, get_kl_type_str
 from ChanAnalyzer.data_manager import DataManager
 from DataAPI.BaoStockAPI import CBaoStock
+from DataAPI.TdxAPI import CTdxAPI
 from DataAPI.TushareAPI import CTushareAPI
 from scripts.baostock_utils import get_effective_baostock_trade_date
 
@@ -121,6 +125,8 @@ def normalize_baostock_code(code: str) -> str:
 def get_api_class(data_source: str):
     if data_source == "baostock":
         return CBaoStock
+    if data_source == "tdx":
+        return CTdxAPI
     return CTushareAPI
 
 
@@ -189,6 +195,22 @@ def get_trading_days(start_date: str, end_date: str, data_source: str) -> List[d
                 trade_days.append(parse_date_str(trade_date))
         return trade_days
 
+    if data_source == "tdx":
+        # TDX 无独立交易日历接口，这里使用上证指数日线作为交易日代理。
+        CTdxAPI.do_init()
+        api = CTdxAPI(
+            code="000001",
+            k_type=KL_TYPE.K_DAY,
+            begin_date=start,
+            end_date=end,
+            autype=AUTYPE.NONE,
+        )
+        tdx_trade_days = {
+            date(klu.time.year, klu.time.month, klu.time.day)
+            for klu in api.get_kl_data() or []
+        }
+        return sorted(tdx_trade_days)
+
     pro = ts.pro_api()
     df = pro.trade_cal(
         exchange="",
@@ -210,6 +232,14 @@ def get_latest_trade_date(data_source: str, lookback_days: int = 30) -> str:
             lookback_days=max(lookback_days, 90),
             log_fn=_log,
         )
+
+    if data_source == "tdx":
+        end_day = datetime.now().date()
+        start_day = end_day - timedelta(days=max(lookback_days, 30))
+        trading_days = get_trading_days(format_date(start_day), format_date(end_day), "tdx")
+        if not trading_days:
+            raise ValueError("TDX 未获取到最近交易日")
+        return format_date(trading_days[-1])
 
     end_day = datetime.now().date()
     start_day = end_day - timedelta(days=lookback_days)
@@ -405,9 +435,14 @@ def update_stock(
             if only_missing and not refresh and kl_type == KL_TYPE.K_DAY:
                 if precomputed_missing and code in precomputed_missing:
                     missing_ranges = list(
-                        precomputed_missing[code].get("missing_ranges", [])
+                        cast(
+                            Sequence[Tuple[str, str]],
+                            precomputed_missing[code].get("missing_ranges", []),
+                        )
                     )
-                    missing_days = int(precomputed_missing[code].get("missing_days", 0))
+                    missing_days = int(
+                        cast(int, precomputed_missing[code].get("missing_days", 0))
+                    )
                 else:
                     cached_dates = get_cached_day_dates(code)
                     if cached_dates:
@@ -526,9 +561,9 @@ def update_all_stocks(
         else:
             fail_count += 1
 
-        # API 频率限制：每只股票之间延迟 0.2 秒
-        # 这样每分钟最多约 300 次请求，低于 Tushare 的 500 次限制
-        time.sleep(0.2)
+        # Tushare/BaoStock 限频，TDX 本地数据源无需延迟
+        if data_source != "tdx":
+            time.sleep(0.2)
 
     logger.info(f"\n更新完成: 成功 {success_count}, 失败 {fail_count}")
 
@@ -550,7 +585,7 @@ def main():
     parser.add_argument(
         "--data-source",
         default="tushare",
-        choices=["tushare", "baostock"],
+        choices=["tushare", "baostock", "tdx"],
         help="数据源 (默认: tushare)",
     )
     parser.add_argument(

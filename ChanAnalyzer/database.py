@@ -5,7 +5,9 @@ K线数据缓存 - 数据库模型
 """
 
 import os
+import sqlite3
 from datetime import datetime
+from typing import Generator
 
 from sqlalchemy import (
     create_engine,
@@ -44,7 +46,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 @contextmanager
-def get_db() -> Session:
+def get_db() -> Generator[Session, None, None]:
     """获取数据库会话（上下文管理器）"""
     db = SessionLocal()
     try:
@@ -56,6 +58,29 @@ def get_db() -> Session:
 def init_db():
     """初始化数据库（创建所有表）"""
     Base.metadata.create_all(bind=engine)
+
+    if not DB_URL.startswith("sqlite"):
+        return
+
+    db_path = engine.url.database
+    if not db_path:
+        return
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        for sql in (
+            "ALTER TABLE scan_runs ADD COLUMN ma_period INTEGER",
+            "ALTER TABLE scan_results ADD COLUMN signal_time VARCHAR(30)",
+        ):
+            try:
+                cursor.execute(sql)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class KLineData(Base):
@@ -204,6 +229,7 @@ class ScanRun(Base):
     show_money_flow = Column(Integer, nullable=False, default=0)
     sort_by_money_flow = Column(Integer, nullable=False, default=0)
     min_money_flow = Column(Float, nullable=False, default=0)
+    ma_period = Column(Integer, nullable=True)
 
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
@@ -228,6 +254,7 @@ class ScanResult(Base):
     money_flow_net_amount = Column(Float, nullable=True)
     money_flow_net_main_amount = Column(Float, nullable=True)
     money_flow_error = Column(Text, nullable=True)
+    signal_time = Column(String(30), nullable=True)
 
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
