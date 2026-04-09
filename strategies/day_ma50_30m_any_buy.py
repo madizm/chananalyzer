@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from Chan import CChan
 from strategies.day_up_30m_any_buy import (
@@ -14,6 +14,50 @@ from strategies.day_up_30m_any_buy import (
 
 
 DB_PATH = Path(__file__).resolve().parent.parent / "chan.db"
+_MA_CACHE: Dict[Tuple[str, str, int], bool] = {}
+
+
+def get_stocks_above_ma(
+    stock_codes: List[str],
+    as_of_day: str,
+    ma_period: int = 50,
+    batch_size: int = 500,
+) -> List[str]:
+    """批量筛选日线最新收盘高于 MA 的股票。"""
+    if not stock_codes or ma_period <= 0 or not DB_PATH.exists():
+        return []
+
+    passed: List[str] = []
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    try:
+        for i in range(0, len(stock_codes), batch_size):
+            batch = stock_codes[i : i + batch_size]
+            placeholders = ",".join("?" * len(batch))
+            cur.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT
+                        code,
+                        close,
+                        ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
+                    FROM kline_data
+                    WHERE kl_type = 'DAY' AND date <= ? AND code IN ({placeholders})
+                )
+                SELECT code
+                FROM ranked
+                WHERE rn <= ?
+                GROUP BY code
+                HAVING COUNT(*) = ?
+                   AND MAX(CASE WHEN rn = 1 THEN close END) > AVG(close)
+                """,
+                [as_of_day] + batch + [ma_period, ma_period],
+            )
+            passed.extend(row[0] for row in cur.fetchall())
+    finally:
+        conn.close()
+
+    return passed
 
 
 def _load_day_ma_from_db(code: str, as_of_day: str, period: int) -> Optional[float]:
@@ -77,22 +121,31 @@ def is_day_above_ma(snapshot: CChan, day_idx: int, code: str, ma_period: int = 5
         return False
 
     latest_klu = day_kl[-2][-1]
+    as_of_day = latest_klu.time.to_str()
+    cache_key = (code, as_of_day, ma_period)
+    if cache_key in _MA_CACHE:
+        return _MA_CACHE[cache_key]
+
     ma_value = _load_day_ma_from_db(
         code=code,
-        as_of_day=latest_klu.time.to_str(),
+        as_of_day=as_of_day,
         period=ma_period,
     )
     if ma_value is None:
+        _MA_CACHE[cache_key] = False
         return False
 
     latest_close = _load_latest_day_close_from_db(
         code=code,
-        as_of_day=latest_klu.time.to_str(),
+        as_of_day=as_of_day,
     )
     if latest_close is None:
+        _MA_CACHE[cache_key] = False
         return False
 
-    return latest_close > float(ma_value)
+    result = latest_close > float(ma_value)
+    _MA_CACHE[cache_key] = result
+    return result
 
 
 def detect_day_ma_30m_any_buy(
