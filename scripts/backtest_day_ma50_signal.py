@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import json
 import sqlite3
@@ -38,6 +39,7 @@ class SignalEvent:
     code: str
     signal_time: str
     signal_date: str
+    observation_date: str
     bsp_type: str
     signal_price: float
 
@@ -177,6 +179,7 @@ def collect_signals_by_replay(
                 code=code,
                 signal_time=signal_dt.strftime("%Y-%m-%d %H:%M:%S"),
                 signal_date=signal_dt.strftime("%Y-%m-%d"),
+                observation_date=hit.observation_date,
                 bsp_type=hit.bsp_type,
                 signal_price=hit.signal_price,
             )
@@ -203,10 +206,17 @@ def evaluate_signal_events(
 
     for event in events:
         signal_date = _parse_dt(event.signal_date).date()
+        obs_date = _parse_dt(event.observation_date).date()
+
+        # 过滤过期信号：observation_date 比 signal_date 晚超过 1 个交易日则跳过
+        sig_idx = bisect.bisect_left(day_dates, signal_date)
+        obs_idx = bisect.bisect_left(day_dates, obs_date)
+        if obs_idx - sig_idx > 1:
+            continue
 
         entry_idx = None
         for i, d in enumerate(day_dates):
-            if d > signal_date:
+            if d > obs_date:
                 entry_idx = i
                 break
         if entry_idx is None:
@@ -241,6 +251,7 @@ def evaluate_signal_events(
             "code": event.code,
             "signal_time": event.signal_time,
             "signal_date": event.signal_date,
+            "observation_date": event.observation_date,
             "bsp_type": event.bsp_type,
             "signal_price": round(event.signal_price, 4),
             "entry_date": day_dates[entry_idx].strftime("%Y-%m-%d"),
@@ -305,6 +316,7 @@ def save_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
             "code",
             "signal_time",
             "signal_date",
+            "observation_date",
             "bsp_type",
             "signal_price",
             "entry_date",
@@ -460,5 +472,7 @@ def main() -> None:
 if __name__ == "__main__":
     # python scripts/backtest_day_ma50_signal.py --codes 603389 --begin 2025-12-25 --end 2026-03-03 --horizon 3 --entry-mode next_open
     # python scripts/backtest_day_ma50_signal.py --limit 200 --begin 2026-03-20 --end 2026-04-03 --horizon 3 --entry-mode next_open
-    # python scripts/backtest_day_ma50_signal.py --all --begin 2026-01-20 --end 2026-04-04 --horizon 3 --entry-mode next_open --output-dir outputs/ma50
+    # python scripts/backtest_day_ma50_signal.py --all --begin 2026-01-20 --end 2026-04-04 --horizon 3 --buy-types 1 1p --ma-period 21  --output-dir outputs/ma21
+    # python scripts/backtest_day_ma50_signal.py --all --begin 2026-01-20 --end 2026-04-04 --horizon 3 --buy-types 1 1p --ma-period 55  --output-dir outputs/ma55
+    # python scripts/backtest_day_ma50_signal.py --all --begin 2026-01-20 --end 2026-04-04 --horizon 5 --buy-types 1 1p --ma-period 34  --output-dir outputs/ma34
     main()
