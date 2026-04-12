@@ -2,12 +2,41 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import List, Optional
+from typing import Any, List, Optional, Sequence, Tuple
 
 from Chan import CChan
 
-S3_TYPES = {"3a", "3b"}
-B1_TYPES = {"1", "1p"}
+STEPDef = Tuple[bool, set[str], str]
+
+VALID_BSP_LABELS = {
+    "B1",
+    "B1p",
+    "B2",
+    "B2s",
+    "B3",
+    "B3a",
+    "B3b",
+    "S1",
+    "S1p",
+    "S2",
+    "S2s",
+    "S3",
+    "S3a",
+    "S3b",
+}
+
+WILDCARD_TYPE_MAP: dict[str, set[str]] = {
+    "1": {"1", "1p"},
+    "2": {"2", "2s"},
+    "3": {"3a", "3b"},
+}
+
+EXACT_SUFFIX_MAP: dict[str, set[str]] = {
+    "1p": {"1p"},
+    "2s": {"2s"},
+    "3a": {"3a"},
+    "3b": {"3b"},
+}
 
 
 @dataclass
@@ -17,12 +46,8 @@ class SequenceHit:
     signal_price: float
     observation_time: datetime
     observation_date: str
-    s3_type: str
-    s3_time: datetime
-    s3_price: float
-    b1_type: str
-    b1_time: datetime
-    b1_price: float
+    sequence_str: str
+    matched_steps: List[dict[str, Any]]
     gap_days: int
 
 
@@ -47,6 +72,50 @@ def _pick_hit_type(candidates: List[str], target_types: set[str]) -> str:
     return ""
 
 
+def parse_bsp_label(label: str) -> STEPDef:
+    text = str(label).strip()
+    if len(text) < 2:
+        raise ValueError(f"非法 BSP 标签: {label}")
+
+    prefix = text[0].upper()
+    body = text[1:].lower()
+
+    if prefix not in {"B", "S"}:
+        raise ValueError(f"非法 BSP 标签: {label}")
+
+    digit = body[0]
+    suffix = body[1:]
+    if digit not in {"1", "2", "3"}:
+        raise ValueError(f"非法 BSP 标签: {label}")
+
+    if suffix == "":
+        bsp_types = set(WILDCARD_TYPE_MAP[digit])
+        canonical = f"{prefix}{digit}"
+    else:
+        typed_key = f"{digit}{suffix}"
+        if typed_key not in EXACT_SUFFIX_MAP:
+            raise ValueError(f"非法 BSP 标签: {label}")
+        bsp_types = set(EXACT_SUFFIX_MAP[typed_key])
+        canonical = f"{prefix}{typed_key}"
+        canonical = canonical[0] + canonical[1:].lower()
+
+    if canonical not in VALID_BSP_LABELS:
+        raise ValueError(f"非法 BSP 标签: {label}")
+
+    is_buy = prefix == "B"
+    return is_buy, bsp_types, canonical
+
+
+def parse_sequence(tokens: Sequence[str]) -> List[STEPDef]:
+    if not tokens:
+        raise ValueError("--sequence 至少需要 2 个标签")
+
+    parsed = [parse_bsp_label(token) for token in tokens]
+    if len(parsed) < 2:
+        raise ValueError("--sequence 至少需要 2 个标签")
+    return parsed
+
+
 def _extract_trading_dates(level_kl) -> List[date]:
     days = {
         date(klc[0].time.year, klc[0].time.month, klc[0].time.day)
@@ -65,85 +134,89 @@ def _trading_day_gap(d1: date, d2: date, trading_dates: List[date]) -> int:
     return abs((d2 - d1).days)
 
 
-def detect_m30_s3_b1_buy(
+def detect_m30_bsp_sequence(
     snapshot: CChan,
     m30_idx: int,
     observation_time: datetime,
+    sequence: Sequence[STEPDef],
     max_gap_days: int = 5,
     require_bi_sure: bool = True,
 ) -> Optional[SequenceHit]:
+    if len(sequence) < 2:
+        return None
+
     bsp_list = snapshot[m30_idx].bs_point_lst.getSortedBspList()
-    if not bsp_list:
-        return None
-    
-
-
-    b1_pos = -1
-    b1_bsp = None
-    for i in range(len(bsp_list) - 1, -1, -1):
-        bsp = bsp_list[i]
-        if not bsp.is_buy:
-            continue
-        if require_bi_sure and not bsp.bi.is_sure:
-            continue
-        bsp_types = _normalize_bsp_types(bsp.type2str())
-        if not any(t in B1_TYPES for t in bsp_types):
-            continue
-        b1_pos = i
-        b1_bsp = bsp
-        break
-
-    if b1_bsp is None:
+    if len(bsp_list) < len(sequence):
         return None
 
-    s3_pos = -1
-    s3_bsp = None
-    for i in range(b1_pos - 1, -1, -1):
-        bsp = bsp_list[i]
-        if bsp.is_buy:
-            continue
-        bsp_types = _normalize_bsp_types(bsp.type2str())
-        if not any(t in S3_TYPES for t in bsp_types):
-            continue
-        s3_pos = i
-        s3_bsp = bsp
-        break
+    positions = [-1] * len(sequence)
+    matched_bsps = [None] * len(sequence)
+    search_end = len(bsp_list) - 1
 
-    if s3_bsp is None:
+    for step_idx in range(len(sequence) - 1, -1, -1):
+        step_is_buy, step_types, _ = sequence[step_idx]
+        found = False
+        for pos in range(search_end, -1, -1):
+            bsp = bsp_list[pos]
+            if require_bi_sure and not bsp.bi.is_sure:
+                continue
+            if bsp.is_buy != step_is_buy:
+                continue
+            bsp_types = _normalize_bsp_types(bsp.type2str())
+            if not any(t in step_types for t in bsp_types):
+                continue
+            positions[step_idx] = pos
+            matched_bsps[step_idx] = bsp
+            search_end = pos - 1
+            found = True
+            break
+        if not found:
+            return None
+
+    for idx in range(1, len(positions)):
+        if positions[idx] - positions[idx - 1] != 1:
+            return None
+
+    first_bsp = matched_bsps[0]
+    last_bsp = matched_bsps[-1]
+    if first_bsp is None or last_bsp is None:
         return None
 
-    #这一行是在做“纯净序列”校验。
-    # b1_pos 是最新 B1 在 bsp_list 里的位置，s3_pos 是它之前最近 S3 的位置。  
-    # 所以：
-    # - b1_pos - s3_pos == 1：表示 S3 和 B1 紧挨着，中间没有任何其他 BSP
-    if b1_pos - s3_pos != 1:
-        return None
-
-    s3_time = _to_datetime(s3_bsp.klu.time)
-    b1_time = _to_datetime(b1_bsp.klu.time)
+    first_time = _to_datetime(first_bsp.klu.time)
+    signal_time = _to_datetime(last_bsp.klu.time)
     trading_dates = _extract_trading_dates(snapshot[m30_idx])
-    gap_days = _trading_day_gap(s3_time.date(), b1_time.date(), trading_dates)
+    gap_days = _trading_day_gap(first_time.date(), signal_time.date(), trading_dates)
     if gap_days < 0 or gap_days > max_gap_days:
         return None
 
-    s3_type = _pick_hit_type(_normalize_bsp_types(s3_bsp.type2str()), S3_TYPES)
-    b1_type = _pick_hit_type(_normalize_bsp_types(b1_bsp.type2str()), B1_TYPES)
+    matched_steps: List[dict[str, Any]] = []
+    for seq_idx, (bsp, step_def) in enumerate(zip(matched_bsps, sequence), start=1):
+        if bsp is None:
+            return None
+        _, step_types, step_label = step_def
+        bsp_types = _normalize_bsp_types(bsp.type2str())
+        hit_type = _pick_hit_type(bsp_types, step_types)
+        step_time = _to_datetime(bsp.klu.time)
+        matched_steps.append(
+            {
+                "step": seq_idx,
+                "label": step_label,
+                "type": hit_type,
+                "is_buy": bool(bsp.is_buy),
+                "time": step_time,
+                "price": float(bsp.klu.close),
+            }
+        )
 
-    # print("BSP List:")
-    # for bsp in bsp_list:
-    #     print(f"  {bsp.type2str()} - {'Buy' if bsp.is_buy else 'Sell'} - {bsp.klu.time.to_str()} - Close: {bsp.klu.close} - BI Sure: {bsp.bi.is_sure}")
+    sequence_str = " ".join(step[2] for step in sequence)
 
     return SequenceHit(
-        signal_time=b1_time,
-        signal_date=b1_time.strftime("%Y-%m-%d"),
-        signal_price=float(b1_bsp.klu.close),
+        signal_time=signal_time,
+        signal_date=signal_time.strftime("%Y-%m-%d"),
+        signal_price=float(last_bsp.klu.close),
         observation_time=observation_time,
         observation_date=observation_time.strftime("%Y-%m-%d"),
-        s3_type=s3_type,
-        s3_time=s3_time,
-        s3_price=float(s3_bsp.klu.close),
-        b1_type=b1_type,
-        b1_time=b1_time,
-        b1_price=float(b1_bsp.klu.close),
+        sequence_str=sequence_str,
+        matched_steps=matched_steps,
         gap_days=gap_days,
     )

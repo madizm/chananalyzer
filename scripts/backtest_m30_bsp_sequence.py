@@ -1,5 +1,5 @@
 """
-信号回放回测：30M 纯净序列 S3 -> B1 买入。
+信号回放回测：30M 纯净 BSP 序列买入。
 
 特点：
 - signal-only 评估（不做仓位与撮合）
@@ -25,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from Chan import CChan
 from ChanConfig import CChanConfig
 from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from strategies.m30_bsp_sequence_buy import detect_m30_s3_b1_buy
+from strategies.m30_bsp_sequence_buy import detect_m30_bsp_sequence, parse_sequence
 
 DB_PATH = PROJECT_ROOT / "chan.db"
 
@@ -41,12 +41,8 @@ class SignalEvent:
     observation_price: float
     signal_age_days: int
     signal_deviation_pct: float
-    s3_type: str
-    s3_time: str
-    s3_price: float
-    b1_type: str
-    b1_time: str
-    b1_price: float
+    sequence: str
+    matched_steps_json: str
     gap_days: int
 
 
@@ -141,6 +137,7 @@ def collect_signals_by_replay(
     max_gap_days: int,
     max_signal_age_days: int,
     max_signal_deviation_pct: Optional[float],
+    sequence,
 ) -> List[SignalEvent]:
     config = CChanConfig(
         {
@@ -185,10 +182,11 @@ def collect_signals_by_replay(
             cur_time.minute,
         )
 
-        hit = detect_m30_s3_b1_buy(
+        hit = detect_m30_bsp_sequence(
             snapshot=snapshot,
             m30_idx=m30_idx,
             observation_time=observation_dt,
+            sequence=sequence,
             max_gap_days=max_gap_days,
             require_bi_sure=True,
         )
@@ -221,15 +219,27 @@ def collect_signals_by_replay(
         ):
             continue
 
-        key = (
-            hit.s3_time.isoformat(),
-            hit.b1_time.isoformat(),
-            hit.s3_type,
-            hit.b1_type,
+        dedup_steps = tuple(
+            (step["time"].isoformat(), step["label"], step["type"])
+            for step in hit.matched_steps
         )
+        key = (hit.sequence_str, dedup_steps)
         if key in seen_keys:
             continue
         seen_keys.add(key)
+
+        serialized_steps = []
+        for step in hit.matched_steps:
+            serialized_steps.append(
+                {
+                    "step": step["step"],
+                    "label": step["label"],
+                    "type": step["type"],
+                    "is_buy": step["is_buy"],
+                    "time": step["time"].strftime("%Y-%m-%d %H:%M:%S"),
+                    "price": step["price"],
+                }
+            )
 
         events.append(
             SignalEvent(
@@ -242,12 +252,8 @@ def collect_signals_by_replay(
                 observation_price=observation_price,
                 signal_age_days=signal_age_days,
                 signal_deviation_pct=signal_deviation_pct,
-                s3_type=hit.s3_type,
-                s3_time=hit.s3_time.strftime("%Y-%m-%d %H:%M:%S"),
-                s3_price=hit.s3_price,
-                b1_type=hit.b1_type,
-                b1_time=hit.b1_time.strftime("%Y-%m-%d %H:%M:%S"),
-                b1_price=hit.b1_price,
+                sequence=hit.sequence_str,
+                matched_steps_json=json.dumps(serialized_steps, ensure_ascii=False),
                 gap_days=hit.gap_days,
             )
         )
@@ -319,12 +325,8 @@ def evaluate_signal_events(
             "observation_price": round(event.observation_price, 4),
             "signal_age_days": event.signal_age_days,
             "signal_deviation_pct": round(event.signal_deviation_pct, 4),
-            "s3_type": event.s3_type,
-            "s3_time": event.s3_time,
-            "s3_price": round(event.s3_price, 4),
-            "b1_type": event.b1_type,
-            "b1_time": event.b1_time,
-            "b1_price": round(event.b1_price, 4),
+            "sequence": event.sequence,
+            "matched_steps_json": event.matched_steps_json,
             "gap_days": event.gap_days,
             "entry_date": day_dates[entry_idx].strftime("%Y-%m-%d"),
             "exit_date": day_dates[exit_idx].strftime("%Y-%m-%d"),
@@ -383,49 +385,98 @@ def build_summary(rows: List[Dict[str, Any]], scanned_codes: int) -> Dict[str, A
 
 
 def save_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
-    if not rows:
-        headers = [
-            "code",
-            "signal_time",
-            "signal_date",
-            "signal_price",
-            "observation_time",
-            "observation_date",
-            "observation_price",
-            "signal_age_days",
-            "signal_deviation_pct",
-            "s3_type",
-            "s3_time",
-            "s3_price",
-            "b1_type",
-            "b1_time",
-            "b1_price",
-            "gap_days",
-            "entry_date",
-            "entry_open",
-            "entry_close",
-            "exit_date",
-            "exit_close",
-            "exit_reason",
-            "stop_loss_pct",
-            "stop_price",
-            "return_pct",
-            "is_win",
-        ]
-    else:
-        headers = list(rows[0].keys())
+    base_headers = [
+        "code",
+        "signal_time",
+        "signal_date",
+        "signal_price",
+        "observation_time",
+        "observation_date",
+        "observation_price",
+        "signal_age_days",
+        "signal_deviation_pct",
+        "sequence",
+        "gap_days",
+    ]
+    eval_headers = [
+        "entry_date",
+        "entry_open",
+        "entry_close",
+        "exit_date",
+        "exit_close",
+        "exit_reason",
+        "stop_loss_pct",
+        "stop_price",
+        "return_pct",
+        "is_win",
+    ]
+
+    max_steps = 0
+    for row in rows:
+        try:
+            steps = json.loads(row.get("matched_steps_json", "[]"))
+            max_steps = max(max_steps, len(steps))
+        except Exception:
+            continue
+
+    step_headers = []
+    for idx in range(1, max_steps + 1):
+        step_headers.extend(
+            [
+                f"step_{idx}_label",
+                f"step_{idx}_type",
+                f"step_{idx}_time",
+                f"step_{idx}_price",
+            ]
+        )
+
+    headers = base_headers + step_headers + ["matched_steps_json"] + eval_headers
+
+    output_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        out_row = dict(row)
+        steps = []
+        try:
+            steps = json.loads(out_row.get("matched_steps_json", "[]"))
+        except Exception:
+            steps = []
+
+        for idx in range(1, max_steps + 1):
+            out_row[f"step_{idx}_label"] = ""
+            out_row[f"step_{idx}_type"] = ""
+            out_row[f"step_{idx}_time"] = ""
+            out_row[f"step_{idx}_price"] = ""
+
+        for idx, step in enumerate(steps, start=1):
+            if idx > max_steps:
+                break
+            out_row[f"step_{idx}_label"] = step.get("label", "")
+            out_row[f"step_{idx}_type"] = step.get("type", "")
+            out_row[f"step_{idx}_time"] = step.get("time", "")
+            price = step.get("price")
+            out_row[f"step_{idx}_price"] = (
+                round(float(price), 4) if price is not None else ""
+            )
+
+        output_rows.append(out_row)
 
     with open(path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
         writer.writeheader()
-        for row in rows:
+        for row in output_rows:
             writer.writerow(row)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="信号回放回测：30M 纯净序列 S3->B1 买入",
+        description="信号回放回测：30M 纯净 BSP 序列买入",
         formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument(
+        "--sequence",
+        nargs="+",
+        default=["S3", "B1"],
+        help="BSP 序列，如 S3a B1 或 S3 B2 B1，默认 S3 B1",
     )
     parser.add_argument("--codes", nargs="+", help="指定股票代码列表")
     parser.add_argument(
@@ -442,7 +493,7 @@ def parse_args() -> argparse.Namespace:
         "--max-gap-days",
         type=int,
         default=5,
-        help="S3 到 B1 的最大间隔(自然日)，默认 5",
+        help="序列首尾最大间隔(交易日)，默认 5",
     )
     parser.add_argument(
         "--horizon", type=int, default=5, help="N日后收益评估窗口，默认5"
@@ -478,6 +529,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    sequence = parse_sequence(args.sequence)
+    sequence_str = " ".join(step[2] for step in sequence)
 
     if args.horizon <= 0:
         raise ValueError("--horizon 必须大于 0")
@@ -506,7 +559,7 @@ def main() -> None:
         else ""
     )
     print(
-        f"规则: 30M纯净序列 S3->B1，最大间隔<={args.max_gap_days}天，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%，信号账龄<={args.max_signal_age_days}个交易日{deviation_text}"
+        f"规则: 30M纯净序列 {sequence_str}，最大间隔<={args.max_gap_days}个交易日，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%，信号账龄<={args.max_signal_age_days}个交易日{deviation_text}"
     )
 
     all_rows: List[Dict[str, Any]] = []
@@ -524,6 +577,7 @@ def main() -> None:
                 max_gap_days=args.max_gap_days,
                 max_signal_age_days=args.max_signal_age_days,
                 max_signal_deviation_pct=args.max_signal_deviation_pct,
+                sequence=sequence,
             )
             total_signals += len(events)
             if not events:
@@ -553,6 +607,7 @@ def main() -> None:
     summary["max_gap_days"] = args.max_gap_days
     summary["max_signal_age_days"] = args.max_signal_age_days
     summary["max_signal_deviation_pct"] = args.max_signal_deviation_pct
+    summary["sequence"] = sequence_str
     summary["bi_strict"] = args.bi_strict
     summary["begin"] = args.begin
     summary["end"] = args.end
