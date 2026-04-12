@@ -25,7 +25,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from Chan import CChan
 from ChanConfig import CChanConfig
 from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from strategies.m30_bsp_sequence_buy import detect_m30_bsp_sequence, parse_sequence
+from strategies.m30_bsp_sequence_buy import (
+    detect_m30_bsp_sequence,
+    is_day_last_bi_down_sure,
+    parse_sequence,
+)
 
 DB_PATH = PROJECT_ROOT / "chan.db"
 
@@ -138,6 +142,7 @@ def collect_signals_by_replay(
     max_signal_age_days: int,
     max_signal_deviation_pct: Optional[float],
     sequence,
+    require_day_bi: bool,
 ) -> List[SignalEvent]:
     config = CChanConfig(
         {
@@ -148,12 +153,14 @@ def collect_signals_by_replay(
         }
     )
 
+    lv_list = [KL_TYPE.K_DAY, KL_TYPE.K_30M] if require_day_bi else [KL_TYPE.K_30M]
+
     chan = CChan(
         code=code,
         begin_time=begin_date,
         end_time=end_date,
         data_src=DATA_SRC.CACHE_DB,
-        lv_list=[KL_TYPE.K_30M],
+        lv_list=lv_list,
         config=config,
         autype=AUTYPE.QFQ,
     )
@@ -162,6 +169,9 @@ def collect_signals_by_replay(
         return []
 
     m30_idx = chan.lv_list.index(KL_TYPE.K_30M)
+    day_idx = chan.lv_list.index(KL_TYPE.K_DAY) if require_day_bi else None
+    if require_day_bi and day_idx is None:
+        return []
     begin_dt = _parse_dt(signal_begin) if signal_begin else None
     end_dt = _parse_dt(signal_end) if signal_end else None
 
@@ -191,6 +201,11 @@ def collect_signals_by_replay(
             require_bi_sure=True,
         )
         if hit is None:
+            continue
+
+        if require_day_bi and (
+            day_idx is None or not is_day_last_bi_down_sure(snapshot, day_idx)
+        ):
             continue
 
         if begin_dt and hit.observation_time < begin_dt:
@@ -524,6 +539,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default="outputs", help="输出目录")
     parser.add_argument("--bi-strict", action="store_true", help="启用严格笔")
+    parser.add_argument(
+        "--require-day-bi",
+        action="store_true",
+        help="要求日线最新一笔为向下且已确认才允许买入",
+    )
     return parser.parse_args()
 
 
@@ -558,8 +578,9 @@ def main() -> None:
         if args.max_signal_deviation_pct is not None
         else ""
     )
+    day_bi_text = "，需日线最新一笔下跌且确认" if args.require_day_bi else ""
     print(
-        f"规则: 30M纯净序列 {sequence_str}，最大间隔<={args.max_gap_days}个交易日，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%，信号账龄<={args.max_signal_age_days}个交易日{deviation_text}"
+        f"规则: 30M纯净序列 {sequence_str}，最大间隔<={args.max_gap_days}个交易日，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%，信号账龄<={args.max_signal_age_days}个交易日{deviation_text}{day_bi_text}"
     )
 
     all_rows: List[Dict[str, Any]] = []
@@ -578,6 +599,7 @@ def main() -> None:
                 max_signal_age_days=args.max_signal_age_days,
                 max_signal_deviation_pct=args.max_signal_deviation_pct,
                 sequence=sequence,
+                require_day_bi=args.require_day_bi,
             )
             total_signals += len(events)
             if not events:
@@ -608,6 +630,7 @@ def main() -> None:
     summary["max_signal_age_days"] = args.max_signal_age_days
     summary["max_signal_deviation_pct"] = args.max_signal_deviation_pct
     summary["sequence"] = sequence_str
+    summary["require_day_bi"] = args.require_day_bi
     summary["bi_strict"] = args.bi_strict
     summary["begin"] = args.begin
     summary["end"] = args.end

@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import Any, List, Optional, Sequence, Tuple
 
 from Chan import CChan
+from Common.CEnum import BI_DIR
 
 STEPDef = Tuple[bool, set[str], str]
 
@@ -132,6 +133,14 @@ def _trading_day_gap(d1: date, d2: date, trading_dates: List[date]) -> int:
     if d1 in positions and d2 in positions:
         return abs(positions[d1] - positions[d2])
     return abs((d2 - d1).days)
+
+
+def is_day_last_bi_down_sure(snapshot: CChan, day_idx: int) -> bool:
+    day_kl = snapshot[day_idx]
+    if len(day_kl.bi_list) == 0:
+        return False
+    last_bi = day_kl.bi_list[-1]
+    return last_bi.dir == BI_DIR.DOWN and last_bi.is_sure
 
 
 def detect_m30_bsp_sequence(
