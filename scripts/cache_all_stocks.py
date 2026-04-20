@@ -258,7 +258,7 @@ def main():
         "--kl-types",
         nargs="+",
         default=["DAY", "WEEK"],
-        choices=["DAY", "WEEK", "MON", "30M"],
+        choices=["DAY", "WEEK", "MON", "30M", "15M", "5M"],
         help="K线周期类型 (默认: DAY WEEK，可选增加 30M)",
     )
 
@@ -273,6 +273,8 @@ def main():
         "WEEK": KL_TYPE.K_WEEK,
         "MON": KL_TYPE.K_MON,
         "30M": KL_TYPE.K_30M,
+        "15M": KL_TYPE.K_15M,
+        "5M": KL_TYPE.K_5M,
     }
     kl_types = [kl_type_map[t] for t in args.kl_types]
 
