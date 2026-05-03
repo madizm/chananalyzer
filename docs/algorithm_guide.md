@@ -71,63 +71,120 @@
 
 ## 4. CChanConfig 参数
 
-定义见 `ChanConfig.py`，常用项如下。
+定义见 `ChanConfig.py`，下表说明项目默认值、可选值以及各取值含义。默认值以 `CChanConfig` 为准。
 
 ### 4.1 笔相关
 
-- `bi_algo`：成笔算法
-- `bi_strict`：是否严格笔
-- `bi_fx_check`：分型校验（`strict/loss/half/totally`）
-- `gap_as_kl`：缺口是否按 K 线计入跨度
-- `bi_end_is_peak`：笔终点是否要求峰值
-- `bi_allow_sub_peak`：是否允许次级峰值更新
+| 参数 | 默认值 | 可选值 | 含义 |
+| --- | --- | --- | --- |
+| `bi_algo` | `normal` | `normal` / `fx` | 成笔算法。`normal` 会检查分型有效性、笔跨度和笔端峰值；`fx` 只按一顶一底/一底一顶分型成笔，跳过跨度约束，更敏感也更容易产生短笔。 |
+| `bi_strict` | `true` | `true` / `false` | 仅在 `bi_algo="normal"` 下影响跨度。`true` 要求合并K线索引跨度至少 4；`false` 要求跨度至少 3，且中间原始K线数量至少 3。 |
+| **bi_fx_check** | `strict` | `strict` / `loss` / `half` / `totally` | 分型有效性校验方式，见下方详细说明。 |
+| `gap_as_kl` | `false` | `true` / `false` | 是否把相邻合并K线之间的缺口额外计入笔跨度。开启后，当普通跨度不足时，跳空缺口可补足跨度。 |
+| `bi_end_is_peak` | `true` | `true` / `false` | 是否要求笔终点是从起点到终点区间内的极值：上笔终点不能被中途更高点超过；下笔终点不能被中途更低点超过。 |
+| `bi_allow_sub_peak` | `true` | `true` / `false` | 是否允许次高/次低作为笔端。`true` 更宽松；`false` 会在后续出现更合适极值时尝试回退/更新笔端，使笔端更接近严格峰值。 |
 
-### 4.2 线段/中枢相关
+`bi_fx_check` 各取值含义（代码入口：`KLine/KLine.py::CKLine.check_fx_valid`）：
 
-- `seg_algo`：线段算法（默认 `chan`）
-- `left_seg_method`：剩余线段处理方式（`peak/all`）
-- `zs_combine`：是否合并中枢
-- `zs_combine_mode`：中枢合并模式（如 `zs/peak`）
-- `one_bi_zs`：是否允许单笔中枢
-- `zs_algo`：中枢算法（`normal/over_seg/auto`）
+| 取值 | 校验范围 | 含义与严格程度 |
+| --- | --- | --- |
+| `loss` | 只比较起点分型K线和终点分型K线 | 最宽松。只要求顶到底时“起点顶高于终点高、终点低低于起点低”；底到顶反向同理。 |
+| `half` | 起点分型K线 + 起点后一根，终点分型K线 + 终点前一根 | 中等。除分型自身外，还检查起点后一根、终点前一根，避免只靠单根K线轻微突破成笔。 |
+| `strict` | 起点分型前/中/后三根，终点分型前/中/后三根 | 默认且较严格。顶到底要求起点顶区域压过终点区域，且终点底区域跌破起点区域；底到顶反向同理。 |
+| `totally` | 与 `strict` 使用相同三根K线范围，但要求两端区域完全不重叠 | 最严格。顶到底要求起点顶K线低点仍高于终点三根K线最高点；底到顶要求起点底K线高点仍低于终点三根K线最低点。 |
 
-### 4.3 计算模式与数据检查
+### 4.2 线段相关
 
-- `trigger_step`：逐步回放模式
-- `skip_step`：回放跳过步数
-- `kl_data_check`：多级别一致性检查
-- `max_kl_misalgin_cnt`：允许对齐异常次数
-- `max_kl_inconsistent_cnt`：允许时间不一致次数
-- `auto_skip_illegal_sub_lv`：子级别非法时自动跳过
-- `print_warning` / `print_err_time`：日志开关
+| 参数 | 默认值 | 可选值 | 含义 |
+| --- | --- | --- | --- |
+| `seg_algo` | `chan` | `chan` / `1+1` / `break` | 线段识别算法。推荐使用 `chan`；`1+1` 与 `break` 代码中已标记为 deprecated，不建议新配置使用。 |
+| `left_seg_method` | `peak` | `peak` / `all` | 未确认剩余笔如何收尾成虚线段。`peak` 会按剩余笔中的极值递归拆分，更保守；`all` 把剩余部分整体收成一个虚线段，可能更快给出结构，但注释中提示较容易影响二类买卖点识别。 |
 
-### 4.4 指标相关
+### 4.3 中枢相关
 
-- `macd`：MACD 参数（`fast/slow/signal`）
-- `mean_metrics`、`trend_metrics`
-- `boll_n`
-- `cal_demark` + `demark`
-- `cal_rsi` + `rsi_cycle`
-- `cal_kdj` + `kdj_cycle`
+| 参数 | 默认值 | 可选值 | 含义 |
+| --- | --- | --- | --- |
+| `zs_combine` | `true` | `true` / `false` | 是否尝试合并相邻中枢。合并只在同一线段内发生，单笔中枢不会被合并。 |
+| `zs_combine_mode` | `zs` | `zs` / `peak` | 中枢合并判定。`zs`：两个中枢区间 `[low, high]` 有重叠即合并；`peak`：两个中枢涉及笔的峰值区间 `[peak_low, peak_high]` 有重叠即合并，通常比 `zs` 更宽松。 |
+| `one_bi_zs` | `false` | `true` / `false` | 是否允许单笔构成中枢。`false` 时普通中枢至少由两笔重叠构造；`true` 时一笔也可临时形成中枢，信号更敏感但稳定性更弱。`zs_algo="over_seg"` 要求该项为 `false`。 |
+| `zs_algo` | `normal` | `normal` / `over_seg` / `auto` | 中枢构造算法，见下方详细说明。 |
 
-### 4.5 买卖点参数
+`zs_algo` 各取值含义（代码入口：`ZS/ZSList.py::CZSList.cal_bi_zs`）：
 
-- `bs_type`：启用类型（如 `1,1p,2,2s,3a,3b`）
-- `divergence_rate`
-- `min_zs_cnt`
-- `bsp1_only_multibi_zs`
-- `max_bs2_rate`
-- `macd_algo`
-- `bs1_peak`
-- `bsp2_follow_1`
-- `bsp3_follow_1`
-- `bsp3_peak`
-- `bsp2s_follow_2`
-- `max_bsp2s_lv`
-- `strict_bsp3`
-- `bsp3a_max_zs_cnt`
+| 取值 | 含义 | 适用场景 |
+| --- | --- | --- |
+| `normal` | 按线段内部构造中枢。对每个线段，只取与线段方向相反的笔参与中枢生成；默认用最近两笔重叠形成中枢（`one_bi_zs=true` 时可一笔形成）。线段结束后，会对最新未成段部分按反向虚线段逻辑继续尝试。 | 最标准、默认推荐，结构稳定。 |
+| `over_seg` | 跨线段构造中枢。不按每个线段清空计算，而是从上一个中枢之后开始滑动检查连续笔，通常需要最近三笔有重叠才生成；可处理跨越线段边界的中枢。 | 想识别跨段/未明确归属线段的中枢时使用；不支持 `one_bi_zs=true`。 |
+| `auto` | 自动混合。已确认线段按 `normal` 计算；遇到最新未确认线段或尾部不稳定区域时，切换为 `over_seg` 逻辑。 | 希望已确认结构稳定、尾部结构更敏感时使用。 |
 
-此外支持方向/层级覆写：`xxx-buy`、`xxx-sell`、`xxx-segbuy`、`xxx-segsell`、`xxx-seg`。
+### 4.4 计算模式与数据检查
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `trigger_step` | `false` | 逐步回放模式。开启后每加入一根K线就触发结构计算，适合回放/实时场景；关闭时加载完成后统一计算。 |
+| `skip_step` | `0` | step 模式下跳过前 N 步，常用于忽略预热阶段。 |
+| `kl_data_check` | `true` | 是否检查多级别K线时间对齐与一致性。 |
+| `max_kl_misalgin_cnt` | `2` | 允许的多级别对齐异常次数。参数名沿用代码拼写 `misalgin`。 |
+| `max_kl_inconsistent_cnt` | `5` | 允许的父子级别时间不一致次数。 |
+| `auto_skip_illegal_sub_lv` | `false` | 子级别数据非法时是否自动跳过，而不是直接报错中断。 |
+| `print_warning` | `true` | 是否输出警告信息。 |
+| `print_err_time` | `true` | 是否在异常信息中打印相关时间。 |
+
+### 4.5 指标相关
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `macd` | `{fast: 12, slow: 26, signal: 9}` | MACD 参数。 |
+| `mean_metrics` | `[]` | 需要计算的均线周期列表，例如 `[5, 10, 20]`。 |
+| `trend_metrics` | `[]` | 需要计算的趋势通道周期列表，会同时计算对应周期的最高/最低趋势。 |
+| `boll_n` | `20` | BOLL 周期。 |
+| `cal_demark` + `demark` | `false` + 默认配置 | 是否计算 Demark 指标及其参数。 |
+| `cal_rsi` + `rsi_cycle` | `false` + `14` | 是否计算 RSI 及周期。若买卖点 `macd_algo="rsi"`，需要开启 RSI。 |
+| `cal_kdj` + `kdj_cycle` | `false` + `9` | 是否计算 KDJ 及周期。 |
+
+### 4.6 买卖点参数
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `bs_type` | `1,1p,2,2s,3a,3b` | 启用的买卖点类型，支持字符串逗号分隔或列表。可选：`1`、`1p`、`2`、`2s`、`3a`、`3b`。 |
+| **divergence_rate** | `inf` | 背驰阈值。`out_metric <= divergence_rate * in_metric` 视为背驰；大于 100 时等同“保送”，只要突破中枢即可通过背驰检查。 |
+| `min_zs_cnt` | `1` | 触发 1 类买卖点前要求的最少中枢数量。 |
+| `bsp1_only_multibi_zs` | `true` | 1 类买卖点是否只允许多笔中枢，排除单笔中枢。 |
+| `max_bs2_rate` | `0.9999` | 2 类买卖点最大回撤比例，代码要求 `<= 1`。 |
+| `macd_algo` | `peak` | 背驰力度度量方式，见下方取值说明。 |
+| `bs1_peak` | `true` | 1 类买卖点出中枢一笔是否必须是相对峰值。 |
+| `bsp2_follow_1` | `true` | 2 类买卖点是否必须跟随已有 1 类买卖点。 |
+| `bsp3_follow_1` | `true` | 3 类买卖点是否必须跟随已有 1 类买卖点。 |
+| `bsp3_peak` | `false` | 3 类买卖点是否要求离开/回抽相关笔满足峰值约束。 |
+| `bsp2s_follow_2` | `false` | 2s 类买卖点是否必须跟随已有 2 类买卖点。 |
+| `max_bsp2s_lv` | `None` | 2s 类买卖点最大递归层级；`None` 表示不限制。 |
+| `strict_bsp3` | `false` | 是否使用更严格的 3 类买卖点判定。 |
+| `bsp3a_max_zs_cnt` | `1` | 3a 类买卖点允许回看/关联的最大中枢数量，代码要求 `>= 1`。 |
+
+`macd_algo` 各取值含义（用于背驰力度/笔力度比较）：
+
+| 取值 | 含义 |
+| --- | --- |
+| `peak` | 笔内同向 MACD 柱绝对值峰值。默认值。 |
+| `area` | 笔的后半段/反向比较口径下的同向 MACD 柱面积。 |
+| `full_area` | 笔从起点到终点的同向 MACD 柱总面积。 |
+| `diff` | 笔内 MACD 柱最大值与最小值之差。 |
+| `slope` | 笔价格斜率；线段级买卖点默认强制使用该口径。 |
+| `amp` | 笔价格振幅。 |
+| `amount` | 笔内成交额合计。 |
+| `volumn` | 笔内成交量合计。注意代码中沿用拼写 `volumn`。 |
+| `amount_avg` | 笔内平均成交额。 |
+| `volumn_avg` | 笔内平均成交量。 |
+| `turnrate_avg` | 设计含义为笔内平均换手率；当前 `BSPointConfig` 中该字符串映射到 `amount_avg` 口径，使用前需注意实现差异。 |
+| `rsi` | 使用 RSI 强弱作为力度；需要开启 `cal_rsi=true`。 |
+
+此外支持方向/层级覆写：
+
+- `xxx-buy`：只覆盖普通买点配置，例如 `divergence_rate-buy=0.8`。
+- `xxx-sell`：只覆盖普通卖点配置。
+- `xxx-segbuy`：只覆盖线段级买点配置。
+- `xxx-segsell`：只覆盖线段级卖点配置。
+- `xxx-seg`：同时覆盖线段级买点和卖点配置。
 
 ## 5. 结构化分析结果字段
 
