@@ -1,5 +1,5 @@
 """
-信号回放回测：30M 纯净 BSP 序列买入。
+信号回放回测：指定级别纯净 BSP 序列买入（默认 30M）。
 
 特点：
 - signal-only 评估（不做仓位与撮合）
@@ -33,11 +33,20 @@ from strategies.m30_bsp_sequence_buy import (
 )
 
 DB_PATH = PROJECT_ROOT / "chan.db"
+LEVEL_TO_KL_TYPE = {
+    "5M": KL_TYPE.K_5M,
+    "15M": KL_TYPE.K_15M,
+    "30M": KL_TYPE.K_30M,
+    "DAY": KL_TYPE.K_DAY,
+    "WEEK": KL_TYPE.K_WEEK,
+    "MON": KL_TYPE.K_MON,
+}
 
 
 @dataclass
 class SignalEvent:
     code: str
+    level: str
     signal_time: str
     signal_date: str
     signal_price: float
@@ -63,18 +72,37 @@ def _parse_dt(text: Any) -> datetime:
     return datetime.fromisoformat(s)
 
 
-def get_stock_list_from_db(limit: Optional[int] = None) -> List[str]:
+def get_stock_list_from_db(
+    limit: Optional[int] = None, signal_level: str = "30M"
+) -> List[str]:
     if not DB_PATH.exists():
         raise FileNotFoundError(f"数据库不存在: {DB_PATH}")
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("""
-        SELECT DISTINCT code
-        FROM kline_data
-        WHERE kl_type = 'DAY' and code not like '688%'
-        ORDER BY code
-        """)
+    if signal_level == "DAY":
+        cur.execute("""
+            SELECT DISTINCT code
+            FROM kline_data
+            WHERE kl_type = 'DAY' and code not like '688%'
+            ORDER BY code
+            """)
+    else:
+        cur.execute(
+            """
+            SELECT DISTINCT d.code
+            FROM kline_data d
+            WHERE d.kl_type = 'DAY'
+              AND d.code not like '688%'
+              AND EXISTS (
+                  SELECT 1
+                  FROM kline_data s
+                  WHERE s.code = d.code AND s.kl_type = ?
+              )
+            ORDER BY d.code
+            """,
+            (signal_level,),
+        )
     rows = [row[0] for row in cur.fetchall()]
     conn.close()
 
@@ -115,13 +143,21 @@ def load_day_bars(code: str) -> List[tuple[datetime, float, float, float, float]
     return bars
 
 
-def _extract_trading_dates_from_m30(m30_kl) -> List[date]:
+def _extract_trading_dates_from_level(level_kl) -> List[date]:
     days = {
         date(klc[0].time.year, klc[0].time.month, klc[0].time.day)
-        for klc in m30_kl
+        for klc in level_kl
         if len(klc) > 0
     }
     return sorted(days)
+
+
+def _build_lv_list(signal_kl_type: KL_TYPE, need_day: bool) -> List[KL_TYPE]:
+    if not need_day or signal_kl_type == KL_TYPE.K_DAY:
+        return [signal_kl_type]
+    if signal_kl_type in {KL_TYPE.K_WEEK, KL_TYPE.K_MON, KL_TYPE.K_YEAR}:
+        return [signal_kl_type, KL_TYPE.K_DAY]
+    return [KL_TYPE.K_DAY, signal_kl_type]
 
 
 def _signal_age_days(
@@ -144,6 +180,8 @@ def collect_signals_by_replay(
     max_signal_deviation_pct: Optional[float],
     sequence,
     day_bi_mode: str,
+    signal_kl_type: KL_TYPE,
+    signal_level: str,
 ) -> List[SignalEvent]:
     config = CChanConfig(
         {
@@ -155,7 +193,7 @@ def collect_signals_by_replay(
     )
 
     need_day = day_bi_mode != "off"
-    lv_list = [KL_TYPE.K_DAY, KL_TYPE.K_30M] if need_day else [KL_TYPE.K_30M]
+    lv_list = _build_lv_list(signal_kl_type, need_day)
 
     chan = CChan(
         code=code,
@@ -167,10 +205,10 @@ def collect_signals_by_replay(
         autype=AUTYPE.QFQ,
     )
 
-    if KL_TYPE.K_30M not in chan.lv_list:
+    if signal_kl_type not in chan.lv_list:
         return []
 
-    m30_idx = chan.lv_list.index(KL_TYPE.K_30M)
+    signal_idx = chan.lv_list.index(signal_kl_type)
     day_idx = chan.lv_list.index(KL_TYPE.K_DAY) if need_day else None
     begin_dt = _parse_dt(signal_begin) if signal_begin else None
     end_dt = _parse_dt(signal_end) if signal_end else None
@@ -179,11 +217,11 @@ def collect_signals_by_replay(
     events: List[SignalEvent] = []
 
     for snapshot in chan.step_load():
-        m30_kl = snapshot[m30_idx]
-        if len(m30_kl) == 0:
+        signal_kl = snapshot[signal_idx]
+        if len(signal_kl) == 0:
             continue
 
-        cur_time = m30_kl[-1][-1].time
+        cur_time = signal_kl[-1][-1].time
         observation_dt = datetime(
             cur_time.year,
             cur_time.month,
@@ -194,7 +232,7 @@ def collect_signals_by_replay(
 
         hit = detect_m30_bsp_sequence(
             snapshot=snapshot,
-            m30_idx=m30_idx,
+            m30_idx=signal_idx,
             observation_time=observation_dt,
             sequence=sequence,
             max_gap_days=max_gap_days,
@@ -216,7 +254,7 @@ def collect_signals_by_replay(
         if end_dt and hit.observation_time > end_dt:
             continue
 
-        trading_dates = _extract_trading_dates_from_m30(m30_kl)
+        trading_dates = _extract_trading_dates_from_level(signal_kl)
         signal_age_days = _signal_age_days(
             signal_date=hit.signal_time.date(),
             observation_date=hit.observation_time.date(),
@@ -225,7 +263,7 @@ def collect_signals_by_replay(
         if signal_age_days > max_signal_age_days:
             continue
 
-        observation_price = float(m30_kl[-1][-1].close)
+        observation_price = float(signal_kl[-1][-1].close)
         if hit.signal_price == 0:
             continue
         signal_deviation_pct = abs(
@@ -262,6 +300,7 @@ def collect_signals_by_replay(
         events.append(
             SignalEvent(
                 code=code,
+                level=signal_level,
                 signal_time=hit.signal_time.strftime("%Y-%m-%d %H:%M:%S"),
                 signal_date=hit.signal_date,
                 signal_price=hit.signal_price,
@@ -335,6 +374,7 @@ def evaluate_signal_events(
 
         row = {
             "code": event.code,
+            "level": event.level,
             "signal_time": event.signal_time,
             "signal_date": event.signal_date,
             "signal_price": round(event.signal_price, 4),
@@ -405,6 +445,7 @@ def build_summary(rows: List[Dict[str, Any]], scanned_codes: int) -> Dict[str, A
 def save_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
     base_headers = [
         "code",
+        "level",
         "signal_time",
         "signal_date",
         "signal_price",
@@ -487,7 +528,7 @@ def save_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="信号回放回测：30M 纯净 BSP 序列买入",
+        description="信号回放回测：指定级别纯净 BSP 序列买入",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
@@ -495,6 +536,12 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=["S3", "B1"],
         help="BSP 序列，如 S3a B1 或 S3 B2 B1，默认 S3 B1",
+    )
+    parser.add_argument(
+        "--level",
+        choices=list(LEVEL_TO_KL_TYPE.keys()),
+        default="30M",
+        help="信号级别，默认 30M",
     )
     parser.add_argument("--codes", nargs="+", help="指定股票代码列表")
     parser.add_argument(
@@ -511,7 +558,7 @@ def parse_args() -> argparse.Namespace:
         "--max-gap-days",
         type=int,
         default=5,
-        help="序列首尾最大间隔(交易日)，默认 5",
+        help="序列首尾最大间隔（分钟/日线按交易日，周/月线按信号周期），默认 5",
     )
     parser.add_argument(
         "--horizon", type=int, default=5, help="N日后收益评估窗口，默认5"
@@ -532,7 +579,7 @@ def parse_args() -> argparse.Namespace:
         "--max-signal-age-days",
         type=int,
         default=2,
-        help="信号最大允许账龄(交易日)，默认 2",
+        help="信号最大允许账龄（分钟/日线按交易日，周/月线按信号周期），默认 2",
     )
     parser.add_argument(
         "--max-signal-deviation-pct",
@@ -558,6 +605,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    signal_level = args.level
+    signal_kl_type = LEVEL_TO_KL_TYPE[signal_level]
     sequence = parse_sequence(args.sequence)
     sequence_str = " ".join(step[2] for step in sequence)
 
@@ -575,13 +624,17 @@ def main() -> None:
     if args.codes:
         stock_codes = args.codes
     else:
-        stock_codes = get_stock_list_from_db(limit=None if args.all else args.limit)
+        stock_codes = get_stock_list_from_db(
+            limit=None if args.all else args.limit,
+            signal_level=signal_level,
+        )
 
     if not stock_codes:
         print("没有可回测的股票")
         return
 
     print(f"开始回测，股票数量: {len(stock_codes)}")
+    gap_unit = "交易日" if signal_level in {"5M", "15M", "30M", "DAY"} else "信号周期"
     deviation_text = (
         f"，信号偏离<={args.max_signal_deviation_pct}%"
         if args.max_signal_deviation_pct is not None
@@ -592,7 +645,7 @@ def main() -> None:
         "down_sure": "，需日线最新笔下跌且确认",
     }.get(args.day_bi_mode, "")
     print(
-        f"规则: 30M纯净序列 {sequence_str}，最大间隔<={args.max_gap_days}个交易日，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%，信号账龄<={args.max_signal_age_days}个交易日{deviation_text}{day_bi_text}"
+        f"规则: {signal_level}纯净序列 {sequence_str}，最大间隔<={args.max_gap_days}{gap_unit}，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%，信号账龄<={args.max_signal_age_days}{gap_unit}{deviation_text}{day_bi_text}"
     )
 
     all_rows: List[Dict[str, Any]] = []
@@ -612,6 +665,8 @@ def main() -> None:
                 max_signal_deviation_pct=args.max_signal_deviation_pct,
                 sequence=sequence,
                 day_bi_mode=args.day_bi_mode,
+                signal_kl_type=signal_kl_type,
+                signal_level=signal_level,
             )
             total_signals += len(events)
             if not events:
@@ -642,6 +697,7 @@ def main() -> None:
     summary["max_signal_age_days"] = args.max_signal_age_days
     summary["max_signal_deviation_pct"] = args.max_signal_deviation_pct
     summary["sequence"] = sequence_str
+    summary["level"] = signal_level
     summary["day_bi_mode"] = args.day_bi_mode
     summary["bi_strict"] = args.bi_strict
     summary["begin"] = args.begin
@@ -653,8 +709,9 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = out_dir / f"m30_bsp_sequence_rows_{ts}.csv"
-    json_path = out_dir / f"m30_bsp_sequence_summary_{ts}.json"
+    level_slug = signal_level.lower()
+    csv_path = out_dir / f"{level_slug}_bsp_sequence_rows_{ts}.csv"
+    json_path = out_dir / f"{level_slug}_bsp_sequence_summary_{ts}.json"
 
     save_csv(csv_path, all_rows)
     with open(json_path, "w", encoding="utf-8") as f:
