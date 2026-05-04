@@ -135,7 +135,17 @@ def _trading_day_gap(d1: date, d2: date, trading_dates: List[date]) -> int:
     return abs((d2 - d1).days)
 
 
+def is_day_last_bi_down(snapshot: CChan, day_idx: int) -> bool:
+    """日线最新一笔方向为下跌（不要求已确认，包含虚笔）。"""
+    day_kl = snapshot[day_idx]
+    if len(day_kl.bi_list) == 0:
+        return False
+    last_bi = day_kl.bi_list[-1]
+    return last_bi.dir == BI_DIR.DOWN
+
+
 def is_day_last_bi_down_sure(snapshot: CChan, day_idx: int) -> bool:
+    """日线最新一笔方向为下跌且已确认（is_sure=True）。"""
     day_kl = snapshot[day_idx]
     if len(day_kl.bi_list) == 0:
         return False

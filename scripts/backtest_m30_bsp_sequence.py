@@ -24,13 +24,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from Chan import CChan
 from ChanConfig import CChanConfig
-from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from strategies.m30_bsp_sequence_buy import (
-    detect_m30_bsp_sequence,
-    is_day_last_bi_down,
-    is_day_last_bi_down_sure,
-    parse_sequence,
-)
+from Common.CEnum import AUTYPE, BI_DIR, DATA_SRC, KL_TYPE
+from strategies.m30_bsp_sequence_buy import detect_m30_bsp_sequence, parse_sequence
 
 DB_PATH = PROJECT_ROOT / "chan.db"
 LEVEL_TO_KL_TYPE = {
@@ -152,12 +147,13 @@ def _extract_trading_dates_from_level(level_kl) -> List[date]:
     return sorted(days)
 
 
-def _build_lv_list(signal_kl_type: KL_TYPE, need_day: bool) -> List[KL_TYPE]:
-    if not need_day or signal_kl_type == KL_TYPE.K_DAY:
-        return [signal_kl_type]
-    if signal_kl_type in {KL_TYPE.K_WEEK, KL_TYPE.K_MON, KL_TYPE.K_YEAR}:
-        return [signal_kl_type, KL_TYPE.K_DAY]
-    return [KL_TYPE.K_DAY, signal_kl_type]
+def _is_last_bi_down(snapshot: CChan, level_idx: int, require_sure: bool) -> bool:
+    """指定级别最新一笔方向为下跌，可选要求已确认。"""
+    level_kl = snapshot[level_idx]
+    if len(level_kl.bi_list) == 0:
+        return False
+    last_bi = level_kl.bi_list[-1]
+    return last_bi.dir == BI_DIR.DOWN and (not require_sure or last_bi.is_sure)
 
 
 def _signal_age_days(
@@ -179,7 +175,7 @@ def collect_signals_by_replay(
     max_signal_age_days: int,
     max_signal_deviation_pct: Optional[float],
     sequence,
-    day_bi_mode: str,
+    bi_mode: str,
     signal_kl_type: KL_TYPE,
     signal_level: str,
 ) -> List[SignalEvent]:
@@ -192,8 +188,7 @@ def collect_signals_by_replay(
         }
     )
 
-    need_day = day_bi_mode != "off"
-    lv_list = _build_lv_list(signal_kl_type, need_day)
+    lv_list = [signal_kl_type]
 
     chan = CChan(
         code=code,
@@ -209,7 +204,6 @@ def collect_signals_by_replay(
         return []
 
     signal_idx = chan.lv_list.index(signal_kl_type)
-    day_idx = chan.lv_list.index(KL_TYPE.K_DAY) if need_day else None
     begin_dt = _parse_dt(signal_begin) if signal_begin else None
     end_dt = _parse_dt(signal_end) if signal_end else None
 
@@ -241,13 +235,12 @@ def collect_signals_by_replay(
         if hit is None:
             continue
 
-        if need_day and day_idx is not None:
-            if day_bi_mode == "down_sure":
-                if not is_day_last_bi_down_sure(snapshot, day_idx):
-                    continue
-            elif day_bi_mode == "down":
-                if not is_day_last_bi_down(snapshot, day_idx):
-                    continue
+        if bi_mode == "down_sure":
+            if not _is_last_bi_down(snapshot, signal_idx, require_sure=True):
+                continue
+        elif bi_mode == "down":
+            if not _is_last_bi_down(snapshot, signal_idx, require_sure=False):
+                continue
 
         if begin_dt and hit.observation_time < begin_dt:
             continue
@@ -590,15 +583,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="outputs", help="输出目录")
     parser.add_argument("--bi-strict", action="store_true", help="启用严格笔")
     parser.add_argument(
-        "--day-bi-mode",
+        "--bi-mode",
         choices=["off", "down", "down_sure"],
         default="off",
         help=(
-            "日线笔过滤模式（默认 off）：\n"
-            "  off       不检查日线\n"
-            "  down      日线最新笔为下跌即可（含虚笔，信号当日可确认）\n"
-            "  down_sure 日线最新笔为下跌且已确认（严格，信号次日才能确认）"
+            "对应级别笔过滤模式（默认 off）：\n"
+            "  off       不检查笔方向\n"
+            "  down      对应级别最新笔为下跌即可（含虚笔）\n"
+            "  down_sure 对应级别最新笔为下跌且已确认"
         ),
+    )
+    parser.add_argument(
+        "--day-bi-mode",
+        dest="bi_mode",
+        choices=["off", "down", "down_sure"],
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args()
 
@@ -640,12 +640,12 @@ def main() -> None:
         if args.max_signal_deviation_pct is not None
         else ""
     )
-    day_bi_text = {
-        "down": "，需日线最新笔下跌(含虚笔)",
-        "down_sure": "，需日线最新笔下跌且确认",
-    }.get(args.day_bi_mode, "")
+    bi_mode_text = {
+        "down": f"，需{signal_level}最新笔下跌(含虚笔)",
+        "down_sure": f"，需{signal_level}最新笔下跌且确认",
+    }.get(args.bi_mode, "")
     print(
-        f"规则: {signal_level}纯净序列 {sequence_str}，最大间隔<={args.max_gap_days}{gap_unit}，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%，信号账龄<={args.max_signal_age_days}{gap_unit}{deviation_text}{day_bi_text}"
+        f"规则: {signal_level}纯净序列 {sequence_str}，最大间隔<={args.max_gap_days}{gap_unit}，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%，信号账龄<={args.max_signal_age_days}{gap_unit}{deviation_text}{bi_mode_text}"
     )
 
     all_rows: List[Dict[str, Any]] = []
@@ -664,7 +664,7 @@ def main() -> None:
                 max_signal_age_days=args.max_signal_age_days,
                 max_signal_deviation_pct=args.max_signal_deviation_pct,
                 sequence=sequence,
-                day_bi_mode=args.day_bi_mode,
+                bi_mode=args.bi_mode,
                 signal_kl_type=signal_kl_type,
                 signal_level=signal_level,
             )
@@ -698,7 +698,7 @@ def main() -> None:
     summary["max_signal_deviation_pct"] = args.max_signal_deviation_pct
     summary["sequence"] = sequence_str
     summary["level"] = signal_level
-    summary["day_bi_mode"] = args.day_bi_mode
+    summary["bi_mode"] = args.bi_mode
     summary["bi_strict"] = args.bi_strict
     summary["begin"] = args.begin
     summary["end"] = args.end

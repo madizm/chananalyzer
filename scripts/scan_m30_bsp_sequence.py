@@ -1,5 +1,5 @@
 """
-选股扫描：30M 纯净 BSP 序列信号。
+选股扫描：分钟级别纯净 BSP 序列信号。
 
 特点：
 - 使用本地 chan.db（CACHE_DB）扫描
@@ -30,16 +30,18 @@ from ChanAnalyzer.database import (
     SessionLocal,
     init_db,
 )
-from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
+from Common.CEnum import AUTYPE, BI_DIR, DATA_SRC, KL_TYPE
 from strategies.m30_bsp_sequence_buy import (
     STEPDef,
     detect_m30_bsp_sequence,
-    is_day_last_bi_down,
-    is_day_last_bi_down_sure,
     parse_sequence,
 )
 
 DB_PATH = PROJECT_ROOT / "chan.db"
+LEVEL_TO_KL_TYPE = {
+    "15M": KL_TYPE.K_15M,
+    "30M": KL_TYPE.K_30M,
+}
 
 
 def _to_json_text(value: Any) -> str:
@@ -146,12 +148,12 @@ def _latest_price_from_chan(
     return latest_close, change_pct
 
 
-def _extract_observation_time(chan: CChan, m30_idx: int) -> Optional[datetime]:
-    """从 30M K线末尾提取观测时间。"""
-    m30_kl = chan[m30_idx]
-    if len(m30_kl) == 0:
+def _extract_observation_time(chan: CChan, signal_idx: int) -> Optional[datetime]:
+    """从目标分钟级别 K 线末尾提取观测时间。"""
+    signal_kl = chan[signal_idx]
+    if len(signal_kl) == 0:
         return None
-    cur_time = m30_kl[-1][-1].time
+    cur_time = signal_kl[-1][-1].time
     return datetime(
         cur_time.year,
         cur_time.month,
@@ -172,6 +174,15 @@ def _serialize_steps(matched_steps: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return serialized
 
 
+def _is_last_bi_down(chan: CChan, level_idx: int, require_sure: bool) -> bool:
+    """指定级别最新一笔方向为下跌，可选要求已确认。"""
+    level_kl = chan[level_idx]
+    if len(level_kl.bi_list) == 0:
+        return False
+    last_bi = level_kl.bi_list[-1]
+    return last_bi.dir == BI_DIR.DOWN and (not require_sure or last_bi.is_sure)
+
+
 def analyze_stock(
     code: str,
     begin_date: str,
@@ -181,11 +192,12 @@ def analyze_stock(
     sequence: List[STEPDef],
     sequence_str: str,
     max_gap_days: int,
-    day_bi_mode: str,
+    bi_mode: str,
     bi_strict: bool,
+    signal_kl_type: KL_TYPE,
+    signal_level_label: str,
 ) -> Optional[Dict[str, Any]]:
-    need_day = day_bi_mode != "off"
-    lv_list = [KL_TYPE.K_DAY, KL_TYPE.K_30M] if need_day else [KL_TYPE.K_30M]
+    lv_list = [signal_kl_type]
 
     config = CChanConfig(
         {
@@ -206,19 +218,18 @@ def analyze_stock(
         autype=AUTYPE.QFQ,
     )
 
-    if KL_TYPE.K_30M not in chan.lv_list:
+    if signal_kl_type not in chan.lv_list:
         return None
 
-    m30_idx = chan.lv_list.index(KL_TYPE.K_30M)
-    day_idx = chan.lv_list.index(KL_TYPE.K_DAY) if need_day else None
+    signal_idx = chan.lv_list.index(signal_kl_type)
 
-    observation_time = _extract_observation_time(chan, m30_idx)
+    observation_time = _extract_observation_time(chan, signal_idx)
     if observation_time is None:
         return None
 
     hit = detect_m30_bsp_sequence(
         snapshot=chan,
-        m30_idx=m30_idx,
+        m30_idx=signal_idx,
         observation_time=observation_time,
         sequence=sequence,
         max_gap_days=max_gap_days,
@@ -227,21 +238,20 @@ def analyze_stock(
     if hit is None:
         return None
 
-    # Apply day bi filter
-    if need_day and day_idx is not None:
-        if day_bi_mode == "down_sure":
-            if not is_day_last_bi_down_sure(chan, day_idx):
-                return None
-        elif day_bi_mode == "down":
-            if not is_day_last_bi_down(chan, day_idx):
-                return None
+    # Apply selected level bi filter
+    if bi_mode == "down_sure":
+        if not _is_last_bi_down(chan, signal_idx, require_sure=True):
+            return None
+    elif bi_mode == "down":
+        if not _is_last_bi_down(chan, signal_idx, require_sure=False):
+            return None
 
     # Filter by signal time window
     if hit.signal_time < signal_begin or hit.signal_time > signal_end:
         return None
 
-    # Get latest price from the most granular level (30M or day)
-    price_idx = m30_idx
+    # Get latest price from selected signal level
+    price_idx = signal_idx
     latest_price, change_pct = _latest_price_from_chan(chan, price_idx)
 
     # The final (trigger) step
@@ -263,7 +273,7 @@ def analyze_stock(
                 "direction": last_step_direction,
                 "date": hit.signal_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "price": float(last_step["price"]),
-                "period": "30M",
+                "period": signal_level_label,
             }
         ],
     }
@@ -401,7 +411,7 @@ def save_results_to_database(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="选股扫描：30M 纯净 BSP 序列信号",
+        description="选股扫描：分钟级别纯净 BSP 序列信号",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
@@ -411,15 +421,22 @@ def parse_args() -> argparse.Namespace:
         help="BSP 序列，如 S3a B1 或 S3 B2 B1，默认 S3 B1",
     )
     parser.add_argument(
-        "--day-bi-mode",
+        "--bi-mode",
         choices=["off", "down", "down_sure"],
         default="off",
         help=(
-            "日线笔过滤模式（默认 off）：\n"
-            "  off       不检查日线\n"
-            "  down      日线最新笔为下跌即可（含虚笔，信号当日可确认）\n"
-            "  down_sure 日线最新笔为下跌且已确认（严格，信号次日才能确认）"
+            "对应级别笔过滤模式（默认 off）：\n"
+            "  off       不检查笔方向\n"
+            "  down      对应级别最新笔为下跌即可（含虚笔）\n"
+            "  down_sure 对应级别最新笔为下跌且已确认"
         ),
+    )
+    parser.add_argument(
+        "--day-bi-mode",
+        dest="bi_mode",
+        choices=["off", "down", "down_sure"],
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--max-gap-days",
@@ -427,12 +444,20 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="序列首尾最大间隔(交易日)，默认 5",
     )
+    parser.add_argument(
+        "--level",
+        choices=["15M", "30M"],
+        default="30M",
+        help="信号级别，默认 30M",
+    )
     parser.add_argument("--codes", nargs="+", help="指定股票代码列表")
     parser.add_argument("--limit", type=int, default=50, help="未指定 codes 时扫描上限")
     parser.add_argument(
         "--all", action="store_true", help="扫描全部股票（忽略 --limit）"
     )
-    parser.add_argument("--begin", default="2026-01-20", help="K线加载开始日期 YYYY-MM-DD")
+    parser.add_argument(
+        "--begin", default="2026-01-20", help="K线加载开始日期 YYYY-MM-DD"
+    )
     parser.add_argument("--end", help="K线加载结束日期 YYYY-MM-DD")
     parser.add_argument("--signal-begin", help="信号过滤开始日期 YYYY-MM-DD")
     parser.add_argument("--signal-end", help="信号过滤结束日期 YYYY-MM-DD")
@@ -446,6 +471,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     started_at = datetime.now()
+    signal_level = args.level
+    signal_kl_type = LEVEL_TO_KL_TYPE[signal_level]
 
     sequence = parse_sequence(args.sequence)
     sequence_str = " ".join(step[2] for step in sequence)
@@ -476,14 +503,14 @@ def main() -> None:
         print("没有可扫描的股票")
         return
 
-    day_bi_text = {
-        "down": "，需日线最新笔下跌(含虚笔)",
-        "down_sure": "，需日线最新笔下跌且确认",
-    }.get(args.day_bi_mode, "")
+    bi_mode_text = {
+        "down": f"，需{signal_level}最新笔下跌(含虚笔)",
+        "down_sure": f"，需{signal_level}最新笔下跌且确认",
+    }.get(args.bi_mode, "")
 
     print(f"开始扫描，股票数量: {len(stock_codes)}")
     print(
-        f"规则: 30M纯净序列 {sequence_str}，最大间隔<={args.max_gap_days}个交易日{day_bi_text}"
+        f"规则: {signal_level}纯净序列 {sequence_str}，最大间隔<={args.max_gap_days}个交易日{bi_mode_text}"
     )
     print(
         f"数据窗口: {begin_date} ~ {end_date}；"
@@ -502,15 +529,17 @@ def main() -> None:
                 sequence=sequence,
                 sequence_str=sequence_str,
                 max_gap_days=args.max_gap_days,
-                day_bi_mode=args.day_bi_mode,
+                bi_mode=args.bi_mode,
                 bi_strict=args.bi_strict,
+                signal_kl_type=signal_kl_type,
+                signal_level_label=signal_level,
             )
             if hit is not None:
                 results.append(hit)
                 sig = hit["signals"][0]
                 print(
                     f"[{idx}/{len(stock_codes)}] {code}: 命中序列 {sequence_str} "
-                    f"触发={sig['type']}类 ({sig['date']})"
+                    f"触发={sig['period']} {sig['type']}类 ({sig['date']})"
                 )
         except Exception as e:
             print(f"[{idx}/{len(stock_codes)}] {code}: 跳过 ({e})")
@@ -533,7 +562,8 @@ def main() -> None:
                 "end": end_date,
                 "bi_strict": args.bi_strict,
                 "max_gap_days": args.max_gap_days,
-                "day_bi_mode": args.day_bi_mode,
+                "bi_mode": args.bi_mode,
+                "level": signal_level,
             },
             started_at=started_at,
             finished_at=finished_at,
@@ -548,6 +578,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     # python scripts/scan_m30_bsp_sequence.py --sequence S3 B1 --codes 000001 600519
-    # python scripts/scan_m30_bsp_sequence.py --sequence S3 B1 --day-bi-mode down --limit 100 --no-db
-    # python scripts/scan_m30_bsp_sequence.py --sequence S3 B1 --all --signal-begin 2026-04-07
+    # python scripts/scan_m30_bsp_sequence.py --sequence S3 B1 --level 15M --bi-mode down --limit 100 --no-db
+    # python scripts/scan_m30_bsp_sequence.py --sequence S3 B1 --all --signal-begin 2026-04-07 --level 30M --bi-mode down_sure
     main()
