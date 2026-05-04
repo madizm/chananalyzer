@@ -1,3 +1,7 @@
+"""
+计算不同买卖点，可扩展特征值，如背驰度，中枢数量
+公用特征可在CBS_Point中添加
+"""
 from typing import Dict, Generic, Iterable, List, Optional, Tuple, TypeVar
 
 from Bi.Bi import CBi

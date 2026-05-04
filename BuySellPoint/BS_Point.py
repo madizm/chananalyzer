@@ -1,3 +1,6 @@
+"""
+买卖点，可用于添加公用特征    
+"""
 from typing import Dict, Generic, List, Optional, TypeVar, Union
 
 from Bi.Bi import CBi

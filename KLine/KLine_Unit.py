@@ -1,3 +1,41 @@
+"""K线单元与算法扩展点说明。
+
+`CKLine_Unit` 是项目算法链路中的最小 K 线数据单元，向上会被合并为
+`CKLine`，向下可挂接子级别 `CKLine_Unit`。缠论结构识别（分型、笔、
+线段、中枢、买卖点）最终都依赖这里保存的 OHLC、成交信息、指标和
+父子级别关系。
+
+常见算法扩展点：
+
+1. 新增指标
+   - 在 `Math/` 下实现类似 `CMACD`、`BollModel`、`RSI` 的状态模型，
+     对外提供 `add(...)` 或 `update(...)` 方法。
+   - 在 `ChanConfig.CChanConfig.GetMetricModel()` 中按配置实例化模型。
+   - 在 `CKLine_Unit.set_metric()` 中识别该模型，并把计算结果挂到
+     当前 K 线单元上，例如 `self.xxx = metric_model.add(...)`。
+   - 如指标结果需要支持回放/拷贝，在 `__deepcopy__()` 中同步复制。
+
+2. 新增行情字段或交易信息
+   - 字段名优先扩展 `Common.CEnum.DATA_FIELD`。
+   - 若属于成交量、成交额、换手率一类的交易信息，扩展
+     `TRADE_INFO_LST` 与 `TradeInfo.CTradeInfo`，由 `self.trade_info`
+     统一承载，避免散落在 `CKLine_Unit` 顶层属性中。
+
+3. 新增跨级别算法
+   - 使用 `add_children()`、`set_parent()`、`get_children()`、
+     `get_parent_klc()` 维护父子级别关系。
+   - 父级 K 线是否包含某个子级别时间，可通过 `include_sub_lv_time()`
+     查询，适合多周期对齐、递归确认、子级别过滤等逻辑。
+
+4. 修改数据合法性规则
+   - OHLC 基础校验集中在 `check()`。
+   - 如数据源存在高低价异常，可通过 `autofix=True` 自动修正；否则会抛出
+     `CChanException(ErrCode.KL_DATA_INVALID)`。
+
+扩展建议：保持 `CKLine_Unit` 只负责“单根 K 线的数据与指标承载”，不要把
+笔/线段/中枢/买卖点等高层结构判定逻辑放入本文件，避免产生跨层耦合。
+"""
+
 import copy
 from typing import Dict, Optional
 
