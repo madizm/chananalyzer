@@ -106,22 +106,25 @@ def _build_structured_output(chan: CChan, code: str, begin_time: str, end_time: 
     }
 
 if __name__ == "__main__":
-    code = "000062"
-    begin_time = "2025-12-25"
-    end_time = "2026-03-03"
+    code = "002112"
+    # begin_time = "2025-12-25"
+    # begin_time = "2025-10-08"
+    begin_time = "2026-03-10"
+    end_time = "2026-04-07"
+    end_time = "2026-04-28"
     data_src = DATA_SRC.TDX
     # 如果已安装通达信 Python 插件，可切换为 DATA_SRC.TDX
     # code 建议使用 6 位代码（如 "000001"）或后缀格式（如 "000001.SZ"）
     # data_src = DATA_SRC.TDX
-    lv_list = [KL_TYPE.K_DAY, KL_TYPE.K_30M]
+    lv_list = [KL_TYPE.K_30M, KL_TYPE.K_15M]
 
     config = CChanConfig({
         "bi_strict": True,
         "trigger_step": False,
         "skip_step": 0,
         "divergence_rate": float("inf"),
-        "bsp2_follow_1": False,
-        "bsp3_follow_1": False,
+        # "bsp2_follow_1": False,
+        # "bsp3_follow_1": False,
         "min_zs_cnt": 0,
         "bs1_peak": False,
         "macd_algo": "peak",
@@ -186,7 +189,7 @@ if __name__ == "__main__":
             plot_para=plot_para,
         )
         plot_driver.figure.show()
-        plot_driver.save2img("./test.png")
+        plot_driver.save2img("./image/test.png")
     else:
         CAnimateDriver(
             chan,
