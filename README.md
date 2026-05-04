@@ -6,6 +6,24 @@
 
 ---
 
+## 在线画图
+
+启动本地在线图表服务：
+
+```bash
+python scripts/run_chart_server.py --host 127.0.0.1 --port 8000
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8000/chart?code=002112&lv=30m&begin=2026-03-10&end=2026-04-28
+```
+
+常用参数：`code` 股票代码，`lv` 支持 `day/week/5m/15m/30m/60m`，`begin/end` 日期，`data_src` 默认 `TDX`，`x_range` 默认展示根数。
+
+---
+
 ## 使用通达信 TDX 数据源（TPythClient）
 
 ```python

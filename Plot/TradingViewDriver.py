@@ -13,6 +13,11 @@ from .PlotDriver import GetPlotMeta, cal_x_limit, parse_plot_config
 from .PlotMeta import CChanPlotMeta
 
 
+def build_tradingview_payload(chan: CChan, plot_config: Union[str, dict, list] = '', plot_para=None) -> dict:
+    """Build the TradingView-compatible payload without writing an HTML file."""
+    return CTradingViewDriver(chan=chan, plot_config=plot_config, plot_para=plot_para).payload
+
+
 class CTradingViewDriver:
     RESOLUTION_MAP = {
         KL_TYPE.K_1M: "1",
@@ -257,17 +262,35 @@ class CTradingViewDriver:
             ])
         return legend
 
+    @staticmethod
+    def _interpolate_price(x0: int, y0: float, x1: int, y1: float, target_x: int) -> float:
+        if x0 == x1:
+            return y0
+        return y0 + (y1 - y0) * (target_x - x0) / (x1 - x0)
+
+    def _clip_line(self, item):
+        x_begin, x_end = self.x_limits
+        if item.end_x < x_begin or item.begin_x > x_end:
+            return None
+
+        begin_x = max(item.begin_x, x_begin)
+        end_x = min(item.end_x, x_end)
+        begin_y = self._interpolate_price(item.begin_x, float(item.begin_y), item.end_x, float(item.end_y), begin_x)
+        end_y = self._interpolate_price(item.begin_x, float(item.begin_y), item.end_x, float(item.end_y), end_x)
+        return begin_x, begin_y, end_x, end_y
+
     def _lines(self, line_list):
-        x_begin, _ = self.x_limits
         result = []
         for item in line_list:
-            if item.end_x < x_begin:
+            clipped = self._clip_line(item)
+            if clipped is None:
                 continue
+            begin_x, begin_y, end_x, end_y = clipped
             result.append({
                 "sure": bool(item.is_sure),
                 "points": [
-                    {"time": self._time_at(item.begin_x), "price": float(item.begin_y)},
-                    {"time": self._time_at(item.end_x), "price": float(item.end_y)},
+                    {"time": self._time_at(begin_x), "price": begin_y},
+                    {"time": self._time_at(end_x), "price": end_y},
                 ],
             })
         return result

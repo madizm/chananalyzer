@@ -44,6 +44,14 @@ def _get_db_path() -> str:
     return db_path
 
 
+def _format_query_date(date_str: str, *, is_end: bool) -> str:
+    value = date_str.replace("-", "/").strip()
+    if len(value) == 10:
+        suffix = "23:59:59" if is_end else "00:00:00"
+        return f"{value} {suffix}"
+    return value
+
+
 def _create_item_dict(row: tuple, autype: AUTYPE) -> dict:
     """将数据库查询结果转换为 K 线单元所需的字典格式
 
@@ -211,12 +219,12 @@ class CCacheDBAPI(CCommonStockApi):
 
             # 格式化日期
             if self.begin_date:
-                start_date = self.begin_date.replace("-", "/")
+                start_date = _format_query_date(self.begin_date, is_end=False)
             else:
                 start_date = "2000/01/01"
 
             if self.end_date:
-                end_date = self.end_date.replace("-", "/")
+                end_date = _format_query_date(self.end_date, is_end=True)
             else:
                 end_date = "2099/12/31"
 
