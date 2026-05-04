@@ -269,6 +269,10 @@ class CCacheDBAPI(CCommonStockApi):
             return "MON"
         elif self.k_type == KL_TYPE.K_30M:
             return "30M"
+        elif self.k_type == KL_TYPE.K_15M:
+            return "15M"
+        elif self.k_type == KL_TYPE.K_5M:
+            return "5M"
         else:
             raise ValueError(f"缓存数据库不支持 {self.k_type} 级别的 K 线数据")
 
