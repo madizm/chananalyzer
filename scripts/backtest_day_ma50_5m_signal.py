@@ -1,11 +1,10 @@
 """
-简化版信号回放回测：日线买点 + 30M买点共振。
+简化版信号回放回测：日线收盘在 MA50 之上 + 5M 任意买点。
 
 特点：
 - 只做 signal-only 评估（不做仓位与撮合）
 - 使用 CChan step replay，避免未来函数
-- 使用待匹配池进行多级别共振触发
-- 输出信号明细 CSV + 统计 JSON
+- 输出信号明细 CSV + 统计 JSON，便于后续分析
 """
 
 from __future__ import annotations
@@ -16,25 +15,23 @@ import json
 import sqlite3
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+# 添加项目根目录到路径
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from Chan import CChan
 from ChanConfig import CChanConfig
 from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from strategies.day_30m_resonance_buy import (
-    BSPPool,
-    DEFAULT_BUY_TYPES,
-    detect_resonance_hits,
-    extract_latest_buy_candidates,
-)
+from strategies.day_ma50_30m_any_buy import get_stocks_above_ma
+from strategies.day_ma50_5m_any_buy import detect_day_ma_5m_any_buy
 
 
 DB_PATH = PROJECT_ROOT / "chan.db"
+DEFAULT_BUY_TYPES = ["1", "1p", "2", "3a", "3b"]
 
 
 @dataclass
@@ -42,21 +39,8 @@ class SignalEvent:
     code: str
     signal_time: str
     signal_date: str
+    bsp_type: str
     signal_price: float
-    observation_time: str
-    observation_date: str
-    observation_price: float
-    signal_age_days: int
-    signal_deviation_pct: float
-    resonance_gap_days: int
-    day_bsp_key: str
-    day_bsp_time: str
-    day_bsp_type: str
-    day_signal_price: float
-    m30_bsp_key: str
-    m30_bsp_time: str
-    m30_bsp_type: str
-    m30_signal_price: float
 
 
 def _parse_dt(text: Any) -> datetime:
@@ -94,6 +78,7 @@ def get_stock_list_from_db(limit: Optional[int] = None) -> List[str]:
 
 
 def load_day_bars(code: str) -> List[tuple[datetime, float, float, float, float]]:
+    """返回 (timestamp, open, high, low, close) 日线列表。"""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
@@ -125,31 +110,21 @@ def load_day_bars(code: str) -> List[tuple[datetime, float, float, float, float]
     return bars
 
 
-def _signal_age_days(signal_date: date, observation_date: date, trading_dates: List[date]) -> int:
-    if observation_date < signal_date:
-        return 0
-    return sum(1 for d in trading_dates if signal_date < d <= observation_date)
-
-
 def collect_signals_by_replay(
     code: str,
     begin_date: Optional[str],
     end_date: Optional[str],
-    day_buy_types: List[str],
-    m30_buy_types: List[str],
+    ma_period: int,
+    buy_types: List[str],
     signal_begin: Optional[str],
     signal_end: Optional[str],
     bi_strict: bool,
-    resonance_window_days: int,
-    max_pool_size: int,
-    max_signal_age_days: int,
-    max_signal_deviation_pct: Optional[float],
 ) -> List[SignalEvent]:
     config = CChanConfig(
         {
             "trigger_step": True,
             "bi_strict": bi_strict,
-            "bs_type": "1,1p,2,2s,3a,3b",
+            "bs_type": "1,1p,2,3a,3b",
             "print_warning": False,
         }
     )
@@ -158,134 +133,55 @@ def collect_signals_by_replay(
         code=code,
         begin_time=begin_date,
         end_time=end_date,
-        data_src=DATA_SRC.CACHE_DB,
-        lv_list=[KL_TYPE.K_DAY, KL_TYPE.K_30M],
+        data_src=DATA_SRC.TDX,
+        lv_list=[KL_TYPE.K_DAY, KL_TYPE.K_5M],
         config=config,
         autype=AUTYPE.QFQ,
     )
 
-    if KL_TYPE.K_DAY not in chan.lv_list or KL_TYPE.K_30M not in chan.lv_list:
+    if KL_TYPE.K_DAY not in chan.lv_list or KL_TYPE.K_5M not in chan.lv_list:
         return []
 
     day_idx = chan.lv_list.index(KL_TYPE.K_DAY)
-    m30_idx = chan.lv_list.index(KL_TYPE.K_30M)
+    m5_idx = chan.lv_list.index(KL_TYPE.K_5M)
     begin_dt = _parse_dt(signal_begin) if signal_begin else None
     end_dt = _parse_dt(signal_end) if signal_end else None
 
-    day_pool = BSPPool(max_size=max_pool_size)
-    m30_pool = BSPPool(max_size=max_pool_size)
-    seen_day_bsp = set()
-    seen_m30_bsp = set()
-    seen_pairs = set()
+    seen_keys = set()
     events: List[SignalEvent] = []
 
     for snapshot in chan.step_load():
-        day_kl = snapshot[day_idx]
-        m30_kl = snapshot[m30_idx]
-        if len(day_kl) == 0 or len(m30_kl) == 0:
+        hit = detect_day_ma_5m_any_buy(
+            snapshot=snapshot,
+            day_idx=day_idx,
+            m5_idx=m5_idx,
+            code=code,
+            ma_period=ma_period,
+            buy_types=buy_types,
+        )
+        if hit is None:
             continue
 
-        cur_day_time = day_kl[-1][-1].time
-        observation_dt = datetime(
-            cur_day_time.year,
-            cur_day_time.month,
-            cur_day_time.day,
-            cur_day_time.hour,
-            cur_day_time.minute,
-        )
-        day_dates_seen = [
-            datetime(klc[0].time.year, klc[0].time.month, klc[0].time.day).date() for klc in day_kl
-        ]
-
-        latest_day = extract_latest_buy_candidates(
-            snapshot=snapshot,
-            idx=day_idx,
-            level="DAY",
-            buy_types=day_buy_types,
-            require_bi_sure=False,
-            number=max_pool_size,
-        )
-        latest_m30 = extract_latest_buy_candidates(
-            snapshot=snapshot,
-            idx=m30_idx,
-            level="30M",
-            buy_types=m30_buy_types,
-            require_bi_sure=True,
-            number=max_pool_size,
-        )
-
-        new_day_items = [item for item in latest_day if item.bsp_key not in seen_day_bsp]
-        for item in new_day_items:
-            seen_day_bsp.add(item.bsp_key)
-            day_pool.add(item)
-
-        new_m30_items = [item for item in latest_m30 if item.bsp_key not in seen_m30_bsp]
-        for item in new_m30_items:
-            seen_m30_bsp.add(item.bsp_key)
-            m30_pool.add(item)
-
-        if not new_day_items and not new_m30_items:
+        signal_dt = hit.signal_time
+        if begin_dt and signal_dt < begin_dt:
+            continue
+        if end_dt and signal_dt > end_dt:
             continue
 
-        hits = detect_resonance_hits(
-            new_day_items=new_day_items,
-            new_m30_items=new_m30_items,
-            day_pool=day_pool,
-            m30_pool=m30_pool,
-            observation_time=observation_dt,
-            trading_dates=day_dates_seen,
-            resonance_window_days=resonance_window_days,
+        key = (signal_dt.isoformat(), hit.bsp_type)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        events.append(
+            SignalEvent(
+                code=code,
+                signal_time=signal_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                signal_date=signal_dt.strftime("%Y-%m-%d"),
+                bsp_type=hit.bsp_type,
+                signal_price=hit.signal_price,
+            )
         )
-
-        for hit in hits:
-            pair_key = (hit.day_bsp_key, hit.m30_bsp_key)
-            if pair_key in seen_pairs:
-                continue
-            seen_pairs.add(pair_key)
-
-            if begin_dt and hit.observation_time < begin_dt:
-                continue
-            if end_dt and hit.observation_time > end_dt:
-                continue
-
-            signal_age_days = _signal_age_days(
-                signal_date=hit.signal_time.date(),
-                observation_date=hit.observation_time.date(),
-                trading_dates=day_dates_seen,
-            )
-            if signal_age_days > max_signal_age_days:
-                continue
-
-            observation_price = float(m30_kl[-1][-1].close)
-            signal_deviation_pct = abs((observation_price - hit.signal_price) / hit.signal_price * 100)
-            if (
-                max_signal_deviation_pct is not None
-                and signal_deviation_pct > max_signal_deviation_pct
-            ):
-                continue
-
-            events.append(
-                SignalEvent(
-                    code=code,
-                    signal_time=hit.signal_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    signal_date=hit.signal_date,
-                    signal_price=hit.signal_price,
-                    observation_time=hit.observation_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    observation_date=hit.observation_date,
-                    observation_price=observation_price,
-                    signal_age_days=signal_age_days,
-                    signal_deviation_pct=signal_deviation_pct,
-                    resonance_gap_days=hit.resonance_gap_days,
-                    day_bsp_key=hit.day_bsp_key,
-                    day_bsp_time=hit.day_bsp_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    day_bsp_type=hit.day_bsp_type,
-                    day_signal_price=hit.day_signal_price,
-                    m30_bsp_key=hit.m30_bsp_key,
-                    m30_bsp_time=hit.m30_bsp_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    m30_bsp_type=hit.m30_bsp_type,
-                    m30_signal_price=hit.m30_signal_price,
-                )
-            )
 
     return events
 
@@ -307,11 +203,11 @@ def evaluate_signal_events(
     rows: List[Dict[str, Any]] = []
 
     for event in events:
-        observation_date = _parse_dt(event.observation_date).date()
+        signal_date = _parse_dt(event.signal_date).date()
 
         entry_idx = None
         for i, d in enumerate(day_dates):
-            if d > observation_date:
+            if d > signal_date:
                 entry_idx = i
                 break
         if entry_idx is None:
@@ -346,19 +242,8 @@ def evaluate_signal_events(
             "code": event.code,
             "signal_time": event.signal_time,
             "signal_date": event.signal_date,
+            "bsp_type": event.bsp_type,
             "signal_price": round(event.signal_price, 4),
-            "observation_time": event.observation_time,
-            "observation_date": event.observation_date,
-            "observation_price": round(event.observation_price, 4),
-            "signal_age_days": event.signal_age_days,
-            "signal_deviation_pct": round(event.signal_deviation_pct, 4),
-            "resonance_gap_days": event.resonance_gap_days,
-            "day_bsp_time": event.day_bsp_time,
-            "day_bsp_type": event.day_bsp_type,
-            "day_signal_price": round(event.day_signal_price, 4),
-            "m30_bsp_time": event.m30_bsp_time,
-            "m30_bsp_type": event.m30_bsp_type,
-            "m30_signal_price": round(event.m30_signal_price, 4),
             "entry_date": day_dates[entry_idx].strftime("%Y-%m-%d"),
             "exit_date": day_dates[exit_idx].strftime("%Y-%m-%d"),
             "exit_close": round(exit_price, 4),
@@ -421,19 +306,8 @@ def save_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
             "code",
             "signal_time",
             "signal_date",
+            "bsp_type",
             "signal_price",
-            "observation_time",
-            "observation_date",
-            "observation_price",
-            "signal_age_days",
-            "signal_deviation_pct",
-            "resonance_gap_days",
-            "day_bsp_time",
-            "day_bsp_type",
-            "day_signal_price",
-            "m30_bsp_time",
-            "m30_bsp_type",
-            "m30_signal_price",
             "entry_date",
             "entry_open",
             "entry_close",
@@ -457,7 +331,7 @@ def save_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="信号回放回测：日线买点 + 30M买点共振",
+        description="信号回放回测：日线收盘在 MA50 之上 + 5M 任意买点",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("--codes", nargs="+", help="指定股票代码列表")
@@ -468,28 +342,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--signal-begin", help="信号过滤开始日期 YYYY-MM-DD")
     parser.add_argument("--signal-end", help="信号过滤结束日期 YYYY-MM-DD")
     parser.add_argument(
-        "--day-buy-types",
+        "--buy-types",
         nargs="+",
         default=DEFAULT_BUY_TYPES,
-        help="允许的DAY买点类型，默认: 1 1p 2 2s 3a 3b",
-    )
-    parser.add_argument(
-        "--m30-buy-types",
-        nargs="+",
-        default=DEFAULT_BUY_TYPES,
-        help="允许的30M买点类型，默认: 1 1p 2 2s 3a 3b",
-    )
-    parser.add_argument(
-        "--resonance-window-days",
-        type=int,
-        default=3,
-        help="DAY与30M买点最大共振间隔(交易日)，默认 3",
-    )
-    parser.add_argument(
-        "--max-pool-size",
-        type=int,
-        default=3,
-        help="每个级别待匹配池保留最近N个买点，默认 3",
+        help="允许的5M买点类型，默认: 1 1p 2 3a 3b",
     )
     parser.add_argument("--horizon", type=int, default=5, help="N日后收益评估窗口，默认5")
     parser.add_argument(
@@ -504,20 +360,14 @@ def parse_args() -> argparse.Namespace:
         default=5.0,
         help="强制止损百分比，默认 5.0；设为 0 表示关闭止损",
     )
-    parser.add_argument(
-        "--max-signal-age-days",
-        type=int,
-        default=2,
-        help="信号最大允许账龄(交易日)，默认 2",
-    )
-    parser.add_argument(
-        "--max-signal-deviation-pct",
-        type=float,
-        default=None,
-        help="观测时价格相对信号价的最大偏离百分比；不设置则不限制",
-    )
     parser.add_argument("--output-dir", default="outputs", help="输出目录")
     parser.add_argument("--bi-strict", action="store_true", help="启用严格笔")
+    parser.add_argument("--ma-period", type=int, default=50, help="日线均线周期，默认 50")
+    parser.add_argument(
+        "--no-prefilter",
+        action="store_true",
+        help="跳过MA预过滤（默认先过滤日线在均线之上的股票）",
+    )
     return parser.parse_args()
 
 
@@ -528,14 +378,8 @@ def main() -> None:
         raise ValueError("--horizon 必须大于 0")
     if args.stop_loss_pct < 0:
         raise ValueError("--stop-loss-pct 不能小于 0")
-    if args.resonance_window_days < 0:
-        raise ValueError("--resonance-window-days 不能小于 0")
-    if args.max_pool_size <= 0:
-        raise ValueError("--max-pool-size 必须大于 0")
-    if args.max_signal_age_days < 0:
-        raise ValueError("--max-signal-age-days 不能小于 0")
-    if args.max_signal_deviation_pct is not None and args.max_signal_deviation_pct < 0:
-        raise ValueError("--max-signal-deviation-pct 不能小于 0")
+    if args.ma_period <= 0:
+        raise ValueError("--ma-period 必须大于 0")
 
     if args.codes:
         stock_codes = args.codes
@@ -546,17 +390,24 @@ def main() -> None:
         print("没有可回测的股票")
         return
 
+    if not args.no_prefilter:
+        prefilter_as_of = args.end or datetime.now().strftime("%Y-%m-%d")
+        prefilter_codes = get_stocks_above_ma(
+            stock_codes=stock_codes,
+            as_of_day=prefilter_as_of,
+            ma_period=args.ma_period,
+        )
+        print(
+            f"MA{args.ma_period} 预过滤: {len(stock_codes)} -> {len(prefilter_codes)}"
+        )
+        stock_codes = prefilter_codes
+        if not stock_codes:
+            print("预过滤后无可回测股票")
+            return
+
     print(f"开始回测，股票数量: {len(stock_codes)}")
-    deviation_text = (
-        f"，信号偏离<={args.max_signal_deviation_pct}%"
-        if args.max_signal_deviation_pct is not None
-        else ""
-    )
     print(
-        "规则: DAY买点(" + ", ".join(args.day_buy_types) + ") + 30M买点(" + ", ".join(args.m30_buy_types) + ")"
-        + f"，共振窗口<={args.resonance_window_days}个交易日，池大小={args.max_pool_size}"
-        + f"，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%"
-        + f"，信号账龄<={args.max_signal_age_days}个交易日{deviation_text}"
+        f"规则: 日线收盘在 MA{args.ma_period} 之上 + 5M任意买点({', '.join(args.buy_types)})，N={args.horizon}日信号评估，入场={args.entry_mode}，止损={args.stop_loss_pct}%"
     )
 
     all_rows: List[Dict[str, Any]] = []
@@ -568,15 +419,11 @@ def main() -> None:
                 code=code,
                 begin_date=args.begin,
                 end_date=args.end,
-                day_buy_types=args.day_buy_types,
-                m30_buy_types=args.m30_buy_types,
+                ma_period=args.ma_period,
+                buy_types=args.buy_types,
                 signal_begin=args.signal_begin,
                 signal_end=args.signal_end,
                 bi_strict=args.bi_strict,
-                resonance_window_days=args.resonance_window_days,
-                max_pool_size=args.max_pool_size,
-                max_signal_age_days=args.max_signal_age_days,
-                max_signal_deviation_pct=args.max_signal_deviation_pct,
             )
             total_signals += len(events)
             if not events:
@@ -601,16 +448,10 @@ def main() -> None:
     summary = build_summary(all_rows, scanned_codes=len(stock_codes))
     summary["raw_signals"] = total_signals
     summary["horizon_days"] = args.horizon
-    summary["day_buy_types"] = args.day_buy_types
-    summary["m30_buy_types"] = args.m30_buy_types
-    summary["resonance_window_days"] = args.resonance_window_days
-    summary["max_pool_size"] = args.max_pool_size
+    summary["buy_types"] = args.buy_types
     summary["entry_mode"] = args.entry_mode
     summary["stop_loss_pct"] = args.stop_loss_pct
-    summary["max_signal_age_days"] = args.max_signal_age_days
-    summary["max_signal_deviation_pct"] = args.max_signal_deviation_pct
-    summary["begin"] = args.begin
-    summary["end"] = args.end
+    summary["ma_period"] = args.ma_period
     summary["shift_bars"] = 1
     summary["exec_policy"] = f"{args.entry_mode}_shift_1_bar"
     summary["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -618,8 +459,8 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = out_dir / f"day_30m_resonance_rows_{ts}.csv"
-    json_path = out_dir / f"day_30m_resonance_summary_{ts}.json"
+    csv_path = out_dir / f"day_ma{args.ma_period}_5m_signal_rows_{ts}.csv"
+    json_path = out_dir / f"day_ma{args.ma_period}_5m_signal_summary_{ts}.json"
 
     save_csv(csv_path, all_rows)
     with open(json_path, "w", encoding="utf-8") as f:
@@ -638,6 +479,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # python scripts/backtest_day_30m_resonance.py --codes 000001 --begin 2026-01-01 --end 2026-04-04 --horizon 5 --entry-mode next_open --output-dir outputs/resonance
-    # python scripts/backtest_day_30m_resonance.py --all --begin 2026-01-01 --end 2026-04-04 --resonance-window-days 3 --max-pool-size 3 --output-dir outputs/resonance
+    # python scripts/backtest_day_ma50_5m_signal.py --codes 603389 --begin 2025-12-25 --end 2026-03-03 --horizon 3 --entry-mode next_open
+    # python scripts/backtest_day_ma50_5m_signal.py --limit 100 --begin 2026-03-20 --end 2026-04-03 --horizon 3 --entry-mode next_open
+    # python scripts/backtest_day_ma50_5m_signal.py --all --begin 2026-01-20 --end 2026-04-04 --horizon 3 --buy-types 1 1p --ma-period 21 --output-dir outputs/ma21_5m
     main()

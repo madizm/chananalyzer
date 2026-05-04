@@ -11,7 +11,7 @@ K线数据更新脚本
     python -m scripts.update_data --all --data-source baostock --kl-types DAY
 
     # 使用 TDX 更新所有已缓存的股票
-    python -m scripts.update_data --all --data-source tdx --kl-types DAY 30M
+    python -m scripts.update_data --all --data-source tdx --kl-types DAY 30M 15M
 
     # 使用 BaoStock 更新
     python -m scripts.update_data --codes 000001 --data-source baostock
