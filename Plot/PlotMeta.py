@@ -114,7 +114,9 @@ class CBS_Point_meta:
         is_seg_flag = "※" if self.is_seg else ""
         return f'{is_seg_flag}b{self.type}' if self.is_buy else f'{is_seg_flag}s{self.type}'
 
-
+"""
+可基于此类实现画图
+"""
 class CChanPlotMeta:
     def __init__(self, kl_list: CKLine_List):
         self.data = kl_list
