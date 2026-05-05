@@ -723,6 +723,12 @@ def parse_period_list(period_text: Optional[str]) -> Optional[List[str]]:
     return [period.strip().replace("-", "/") for period in period_text.split(",") if period.strip()]
 
 
+def parse_float_list(value_text: Optional[str]) -> List[float]:
+    if not value_text:
+        return []
+    return [float(value.strip()) for value in value_text.split(",") if value.strip()]
+
+
 def metric_or_none(func, y_true, y_score) -> Optional[float]:
     try:
         value = float(func(y_true, y_score))
@@ -740,10 +746,69 @@ def avg_optional(values: Iterable[Optional[float]]) -> float:
     return sum(real_values) / len(real_values)
 
 
+def realized_return_after_cost(sample: SignalSample, trade_cost: float) -> Optional[float]:
+    if sample.realized_return is None:
+        return None
+    return float(sample.realized_return) - trade_cost
+
+
+def exit_reason_summary(samples: List[SignalSample]) -> Dict:
+    reasons = ("take_profit", "stop_loss", "timeout")
+    counts = {reason: 0 for reason in reasons}
+    counts["other"] = 0
+    for sample in samples:
+        if sample.exit_reason in counts:
+            counts[sample.exit_reason] += 1
+        else:
+            counts["other"] += 1
+    total = len(samples)
+    return {
+        "exit_reason_counts": counts,
+        "exit_reason_rates": {
+            reason: safe_div(float(count), float(total))
+            for reason, count in counts.items()
+        },
+    }
+
+
+def summarize_scored_group(
+    scores: List[float],
+    samples: List[SignalSample],
+    trade_cost: float,
+) -> Dict:
+    sample_count = len(samples)
+    if sample_count == 0:
+        return {
+            "sample_count": 0,
+            "min_score": None,
+            "avg_score": None,
+            "hit_rate": None,
+            "avg_realized_return": None,
+            "avg_realized_return_after_cost": None,
+            "avg_forward_return": None,
+            "avg_max_gain": None,
+            "avg_max_drawdown": None,
+            **exit_reason_summary([]),
+        }
+    return {
+        "sample_count": sample_count,
+        "min_score": min(scores),
+        "avg_score": sum(scores) / sample_count,
+        "hit_rate": sum(int(sample.label) for sample in samples) / sample_count,
+        "avg_realized_return": avg_optional(sample.realized_return for sample in samples),
+        "avg_realized_return_after_cost": avg_optional(realized_return_after_cost(sample, trade_cost) for sample in samples),
+        "avg_forward_return": avg_optional(sample.forward_return for sample in samples),
+        "avg_max_gain": avg_optional(sample.max_gain for sample in samples),
+        "avg_max_drawdown": avg_optional(sample.max_drawdown for sample in samples),
+        **exit_reason_summary(samples),
+    }
+
+
 def summarize_score_buckets(
     test_prob,
     test_samples: List[SignalSample],
     buckets: Tuple[float, ...] = (0.05, 0.10, 0.20, 0.30),
+    trade_cost: float = 0.0,
 ) -> List[Dict[str, float]]:
     ranked_samples = sorted(zip(test_prob, test_samples), key=lambda item: item[0], reverse=True)
     bucket_rows = []
@@ -752,25 +817,37 @@ def summarize_score_buckets(
         top_items = ranked_samples[:top_n]
         top_scores = [float(score) for score, _ in top_items]
         top_samples = [sample for _, sample in top_items]
-        hit_rate = sum(int(sample.label) for sample in top_samples) / top_n
         bucket_rows.append({
             "top_pct": bucket,
-            "sample_count": top_n,
-            "min_score": min(top_scores),
-            "avg_score": sum(top_scores) / top_n,
-            "hit_rate": hit_rate,
-            "avg_realized_return": avg_optional(sample.realized_return for sample in top_samples),
-            "avg_forward_return": avg_optional(sample.forward_return for sample in top_samples),
-            "avg_max_gain": avg_optional(sample.max_gain for sample in top_samples),
-            "avg_max_drawdown": avg_optional(sample.max_drawdown for sample in top_samples),
+            **summarize_scored_group(top_scores, top_samples, trade_cost),
         })
     return bucket_rows
+
+
+def summarize_score_thresholds(
+    test_prob,
+    test_samples: List[SignalSample],
+    thresholds: List[float],
+    trade_cost: float,
+) -> List[Dict]:
+    scored_samples = [(float(score), sample) for score, sample in zip(test_prob, test_samples)]
+    rows = []
+    for threshold in thresholds:
+        items = [(score, sample) for score, sample in scored_samples if score >= threshold]
+        scores = [score for score, _ in items]
+        samples = [sample for _, sample in items]
+        rows.append({
+            "threshold": threshold,
+            **summarize_scored_group(scores, samples, trade_cost),
+        })
+    return rows
 
 
 def summarize_time_period_metrics(
     test_prob,
     test_samples: List[SignalSample],
     buckets: Tuple[float, ...] = (0.05, 0.10, 0.20),
+    trade_cost: float = 0.0,
 ) -> List[Dict]:
     period_items: Dict[str, List[Tuple[float, SignalSample]]] = {}
     for score, sample in zip(test_prob, test_samples):
@@ -784,7 +861,7 @@ def summarize_time_period_metrics(
         period_samples = [sample for _, sample in items]
         y_true = [int(sample.label) for sample in period_samples]
         has_two_classes = len(set(y_true)) == 2
-        score_buckets = summarize_score_buckets(period_scores, period_samples, buckets)
+        score_buckets = summarize_score_buckets(period_scores, period_samples, buckets, trade_cost)
         bucket_by_pct = {row["top_pct"]: row for row in score_buckets}
 
         period_rows.append({
@@ -795,6 +872,7 @@ def summarize_time_period_metrics(
             "average_precision": metric_or_none(average_precision_score, y_true, period_scores) if has_two_classes else None,
             "avg_score": sum(period_scores) / len(period_scores),
             "avg_realized_return": avg_optional(sample.realized_return for sample in period_samples),
+            "avg_realized_return_after_cost": avg_optional(realized_return_after_cost(sample, trade_cost) for sample in period_samples),
             "avg_forward_return": avg_optional(sample.forward_return for sample in period_samples),
             "top5pct_hit_rate": bucket_by_pct[0.05]["hit_rate"],
             "top5pct_avg_realized_return": bucket_by_pct[0.05]["avg_realized_return"],
@@ -813,6 +891,8 @@ def run_walk_forward_validation(
     random_state: int,
     min_train_samples: int,
     min_test_samples: int,
+    trade_cost: float,
+    score_thresholds: List[float],
 ) -> List[Dict]:
     sorted_samples = sorted(samples, key=lambda sample: (sample.open_time, sample.code, sample.open_klu_idx))
     rows = []
@@ -854,7 +934,14 @@ def run_walk_forward_validation(
             continue
 
         feature_meta = build_feature_meta(train_samples)
-        _, window_metrics, _ = train_model(train_samples, test_samples, feature_meta, random_state)
+        _, window_metrics, _ = train_model(
+            train_samples,
+            test_samples,
+            feature_meta,
+            random_state,
+            trade_cost,
+            score_thresholds,
+        )
         window_metrics.pop("time_period_metrics", None)
         row.update(window_metrics)
         row["status"] = "ok"
@@ -868,6 +955,8 @@ def train_model(
     test_samples: List[SignalSample],
     feature_meta: Dict[str, int],
     random_state: int,
+    trade_cost: float,
+    score_thresholds: List[float],
 ):
     x_train = build_matrix(train_samples, feature_meta)
     y_train = [int(sample.label) for sample in train_samples]
@@ -891,7 +980,7 @@ def train_model(
     train_positive_rate = sum(y_train) / len(y_train)
     test_positive_rate = sum(y_test) / len(y_test)
 
-    score_buckets = summarize_score_buckets(test_prob, test_samples)
+    score_buckets = summarize_score_buckets(test_prob, test_samples, trade_cost=trade_cost)
     top20_bucket = next(row for row in score_buckets if row["top_pct"] == 0.20)
 
     metrics = {
@@ -906,11 +995,15 @@ def train_model(
         "test_precision_at_0_5": float(precision_score(y_test, test_pred, zero_division=0)),
         "test_recall_at_0_5": float(recall_score(y_test, test_pred, zero_division=0)),
         "test_avg_realized_return": avg_optional(sample.realized_return for sample in test_samples),
+        "test_avg_realized_return_after_cost": avg_optional(realized_return_after_cost(sample, trade_cost) for sample in test_samples),
         "test_avg_forward_return": avg_optional(sample.forward_return for sample in test_samples),
         "test_top20pct_hit_rate": top20_bucket["hit_rate"],
         "test_top20pct_avg_realized_return": top20_bucket["avg_realized_return"],
+        "test_top20pct_avg_realized_return_after_cost": top20_bucket["avg_realized_return_after_cost"],
+        "test_exit_reason_summary": exit_reason_summary(test_samples),
         "score_buckets": score_buckets,
-        "time_period_metrics": summarize_time_period_metrics(test_prob, test_samples),
+        "score_thresholds": summarize_score_thresholds(test_prob, test_samples, score_thresholds, trade_cost),
+        "time_period_metrics": summarize_time_period_metrics(test_prob, test_samples, trade_cost=trade_cost),
     }
     return model, metrics, test_prob
 
@@ -1010,6 +1103,8 @@ def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict
         "split_mode": split_info["mode"],
         "split_time": split_info["split_time"],
         "train_ratio": args.train_ratio,
+        "trade_cost": args.trade_cost,
+        "score_thresholds": parse_float_list(args.score_thresholds),
         "walk_forward": bool(args.walk_forward),
         "walk_forward_test_periods": parse_period_list(args.walk_forward_test_periods),
         "walk_forward_min_train_samples": args.walk_forward_min_train_samples,
@@ -1042,6 +1137,8 @@ def parse_args():
     parser.add_argument("--stop-loss", type=float, default=0.03, help="先触发该回撤则标签为0。")
     parser.add_argument("--train-ratio", type=float, default=0.7, help="未指定 --split-time 时，按时间排序后的训练样本占比。")
     parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--trade-cost", type=float, default=0.001, help="单笔交易买卖合计成本；仅用于评估扣成本后收益，默认0.001。")
+    parser.add_argument("--score-thresholds", default="0.55,0.60,0.65", help="固定分数阈值评估，逗号分隔。")
     parser.add_argument("--walk-forward", action=argparse.BooleanOptionalAction, default=True, help="是否输出按月份滚动训练验证结果。")
     parser.add_argument("--walk-forward-test-periods", default=None, help="逗号分隔的 walk-forward 测试月份，例如 2026/03,2026/04；默认使用主测试集覆盖的月份。")
     parser.add_argument("--walk-forward-min-train-samples", type=int, default=100, help="walk-forward 单个窗口最少训练样本数。")
@@ -1087,11 +1184,14 @@ if __name__ == "__main__":
     ensure_two_classes(test_samples, "测试集")
 
     feature_meta = build_feature_meta(train_samples)
+    score_thresholds = parse_float_list(args.score_thresholds)
     model, metrics, test_prob = train_model(
         train_samples,
         test_samples,
         feature_meta,
         args.random_state,
+        args.trade_cost,
+        score_thresholds,
     )
     metrics["kl_type"] = DB_KL_TYPE
     metrics["parent_kl_type"] = PARENT_DB_KL_TYPE
@@ -1113,6 +1213,8 @@ if __name__ == "__main__":
             args.random_state,
             args.walk_forward_min_train_samples,
             args.walk_forward_min_test_samples,
+            args.trade_cost,
+            score_thresholds,
         )
     feature_importance = get_feature_importance(model, feature_meta)
 
