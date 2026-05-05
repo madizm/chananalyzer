@@ -15,6 +15,7 @@ This folder contains organized markdown documents generated from the following T
 - `docs/tdx_api/03_get_more_info.md`
 - `docs/tdx_api/04_get_stock_list.md`
 - `docs/tdx_api/05_what_is_quant_trading.md`
+- `docs/tdx_api/06_user_sector.md`
 
 ## Sources
 
@@ -23,3 +24,4 @@ This folder contains organized markdown documents generated from the following T
 - https://help.tdx.com.cn/quant/docs/markdown/mindoc-1ctuhthaq5qmg/mindoc-1h3rtq1hij0ac.html
 - https://help.tdx.com.cn/quant/docs/markdown/mindoc-1ctuhttn72svo/mindoc-1h10qo3uj48fg.html
 - https://help.tdx.com.cn/quant/docs/markdown/mindoc-1h12t4q6fg29o.html
+- https://help.tdx.com.cn/quant/docs/markdown/mindoc-1h139a4ckchkk/
