@@ -1,10 +1,12 @@
 import argparse
 import csv
+import hashlib
 import json
 import math
 import pickle
 import sqlite3
 import sys
+from bisect import bisect_left
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import pstdev
@@ -31,8 +33,22 @@ from Common.CEnum import AUTYPE, DATA_FIELD, DATA_SRC, KL_TYPE
 
 
 MODEL_KL_TYPE = KL_TYPE.K_30M
+CHILD_KL_TYPE = KL_TYPE.K_5M
+PARENT_KL_TYPE = KL_TYPE.K_DAY
 DB_KL_TYPE = "30M"
+CHILD_DB_KL_TYPE = "5M"
+PARENT_DB_KL_TYPE = "DAY"
 TARGET_BSP_TYPES = {"1", "1p"}
+MODEL_LV_IDX = 0
+CHILD_LV_IDX = 1
+PARENT_BSP_TYPES = ("1", "1p", "2", "2s", "3a", "3b")
+MODEL_PARAMS = {
+    "type": "RandomForestClassifier",
+    "n_estimators": 300,
+    "max_depth": 4,
+    "min_samples_leaf": 5,
+    "class_weight": "balanced_subsample",
+}
 
 
 @dataclass
@@ -53,6 +69,10 @@ class SignalSample:
 
 def ctime_to_str(ctime_obj) -> str:
     return ctime_obj.to_str()
+
+
+def ctime_to_date_str(ctime_obj) -> str:
+    return f"{ctime_obj.year:04}/{ctime_obj.month:02}/{ctime_obj.day:02}"
 
 
 def safe_div(numerator: float, denominator: float, default: float = 0.0) -> float:
@@ -114,6 +134,54 @@ def ratio_to_recent_avg(klus: List, pos: int, field_name: str, window: int) -> f
     return safe_div(cur_value - avg_value, avg_value)
 
 
+def bi_bar_feature(klus: List, bi) -> Dict[str, float]:
+    feature = {
+        "bi_bar_count": 0.0,
+        "bi_red_bar_pct": 0.0,
+        "bi_green_bar_pct": 0.0,
+        "bi_red_green_count_ratio": 0.0,
+        "bi_red_green_amount_ratio": 0.0,
+        "bi_red_amount_pct": 0.0,
+        "bi_green_amount_pct": 0.0,
+        "bi_amount_intensity_20": 0.0,
+    }
+    begin_idx = min(bi.get_begin_klu().idx, bi.get_end_klu().idx)
+    end_idx = max(bi.get_begin_klu().idx, bi.get_end_klu().idx)
+    bi_klus = [klu for klu in klus if begin_idx <= klu.idx <= end_idx]
+    if not bi_klus:
+        return feature
+
+    red_count = 0
+    green_count = 0
+    red_amount = 0.0
+    green_amount = 0.0
+    for klu in bi_klus:
+        amount = trade_metric(klu, DATA_FIELD.FIELD_TURNOVER) or 0.0
+        if float(klu.close) >= float(klu.open):
+            red_count += 1
+            red_amount += amount
+        else:
+            green_count += 1
+            green_amount += amount
+
+    total_amount = red_amount + green_amount
+    total_count = red_count + green_count
+    ref_window = [klu for klu in klus if end_idx - 19 <= klu.idx <= end_idx]
+    ref_amount_avg = mean((trade_metric(klu, DATA_FIELD.FIELD_TURNOVER) or 0.0) for klu in ref_window)
+    bi_amount_avg = safe_div(total_amount, float(total_count))
+    feature.update({
+        "bi_bar_count": float(total_count),
+        "bi_red_bar_pct": safe_div(float(red_count), float(total_count)),
+        "bi_green_bar_pct": safe_div(float(green_count), float(total_count)),
+        "bi_red_green_count_ratio": safe_div(float(red_count), float(green_count)),
+        "bi_red_green_amount_ratio": safe_div(red_amount, green_amount),
+        "bi_red_amount_pct": safe_div(red_amount, total_amount),
+        "bi_green_amount_pct": safe_div(green_amount, total_amount),
+        "bi_amount_intensity_20": safe_div(bi_amount_avg, ref_amount_avg),
+    })
+    return feature
+
+
 def previous_bsp_feature(entry_klu, current_bsp, previous_bsp) -> Dict[str, float]:
     feature = {
         "prev_bsp_exists": 0.0,
@@ -163,7 +231,122 @@ def previous_bsp_feature(entry_klu, current_bsp, previous_bsp) -> Dict[str, floa
     return feature
 
 
-def strategy_feature(klus: List, pos: int, bsp, previous_bsp=None) -> Dict[str, float]:
+def parent_level_feature(entry_klu, parent_context: Optional[Dict[str, float]]) -> Dict[str, float]:
+    feature = {
+        "parent_exists": 0.0,
+        "parent_return": 0.0,
+        "parent_range": 0.0,
+        "parent_close_pos": 0.0,
+        "parent_volume_ratio_5": 0.0,
+        "entry_vs_parent_close": 0.0,
+        "parent_bi_count": 0.0,
+        "parent_last_bi_dir_up": 0.0,
+        "parent_last_bi_is_sure": 0.0,
+        "parent_latest_bsp_exists": 0.0,
+        "parent_latest_bsp_is_buy": 0.0,
+        "parent_latest_bsp_price_change": 0.0,
+        "parent_latest_bsp_bi_gap": 0.0,
+        "parent_latest_bsp_klu_gap": 0.0,
+        "parent_latest_bsp_divergence_rate": 0.0,
+    }
+    for bsp_type in PARENT_BSP_TYPES:
+        feature[f"parent_latest_bsp_type_{bsp_type}"] = 0.0
+    if not parent_context:
+        return feature
+
+    parent_close = float(parent_context.get("parent_close", 0.0))
+    feature.update(parent_context)
+    feature["parent_exists"] = 1.0
+    feature["entry_vs_parent_close"] = safe_div(float(entry_klu.close) - parent_close, parent_close)
+    feature.pop("parent_close", None)
+    return feature
+
+
+def child_level_feature(entry_klu, main_klc, child_level_chan) -> Dict[str, float]:
+    feature = {
+        "child_klc_count": 0.0,
+        "child_klu_count": 0.0,
+        "child_return": 0.0,
+        "child_range": 0.0,
+        "child_close_pos": 0.0,
+        "child_bi_count": 0.0,
+        "child_last_bi_dir_up": 0.0,
+        "child_last_bi_is_sure": 0.0,
+        "child_latest_bsp_exists": 0.0,
+        "child_latest_bsp_is_buy": 0.0,
+        "child_latest_bsp_price_change": 0.0,
+        "child_latest_bsp_bi_gap": 0.0,
+        "child_latest_bsp_klu_gap": 0.0,
+        "child_latest_bsp_divergence_rate": 0.0,
+    }
+    for bsp_type in PARENT_BSP_TYPES:
+        feature[f"child_latest_bsp_type_{bsp_type}"] = 0.0
+
+    sub_klc_list = list(main_klc.GetSubKLC())
+    sub_klu_list = [klu for klc in sub_klc_list for klu in klc.lst]
+    if not sub_klu_list:
+        return feature
+
+    first_klu = sub_klu_list[0]
+    last_klu = sub_klu_list[-1]
+    high = max(float(klu.high) for klu in sub_klu_list)
+    low = min(float(klu.low) for klu in sub_klu_list)
+    feature.update({
+        "child_klc_count": float(len(sub_klc_list)),
+        "child_klu_count": float(len(sub_klu_list)),
+        "child_return": safe_div(float(last_klu.close) - float(first_klu.open), float(first_klu.open)),
+        "child_range": safe_div(high - low, float(first_klu.open)),
+        "child_close_pos": safe_div(float(last_klu.close) - low, high - low, 0.5),
+    })
+
+    max_child_bi_idx = -1
+    child_bi_cnt = 0
+    for bi in child_level_chan.bi_list:
+        if bi.get_end_klu().idx <= last_klu.idx:
+            child_bi_cnt += 1
+            max_child_bi_idx = max(max_child_bi_idx, bi.idx)
+            last_child_bi = bi
+        else:
+            break
+    if child_bi_cnt > 0:
+        feature.update({
+            "child_bi_count": float(child_bi_cnt),
+            "child_last_bi_dir_up": float(bool(last_child_bi.is_up())),
+            "child_last_bi_is_sure": float(bool(last_child_bi.is_sure)),
+        })
+
+    latest_child_bsp = None
+    for bsp in child_level_chan.bs_point_lst.getSortedBspList():
+        if bsp.klu.idx <= last_klu.idx:
+            latest_child_bsp = bsp
+        else:
+            break
+    if latest_child_bsp is None:
+        return feature
+
+    bsp_price = float(latest_child_bsp.klu.close)
+    feature.update({
+        "child_latest_bsp_exists": 1.0,
+        "child_latest_bsp_is_buy": float(bool(latest_child_bsp.is_buy)),
+        "child_latest_bsp_price_change": safe_div(float(entry_klu.close) - bsp_price, bsp_price),
+        "child_latest_bsp_bi_gap": float(max_child_bi_idx - latest_child_bsp.bi.idx) if max_child_bi_idx >= 0 else 0.0,
+        "child_latest_bsp_klu_gap": float(last_klu.idx - latest_child_bsp.klu.idx),
+    })
+    for bsp_type in str(latest_child_bsp.type2str()).split(","):
+        bsp_type = bsp_type.strip()
+        if bsp_type:
+            feature[f"child_latest_bsp_type_{bsp_type}"] = 1.0
+    for feature_name, value in latest_child_bsp.features.items():
+        if feature_name != "divergence_rate" or value is None:
+            continue
+        try:
+            feature["child_latest_bsp_divergence_rate"] = float(value)
+        except (TypeError, ValueError):
+            pass
+    return feature
+
+
+def strategy_feature(klus: List, pos: int, bsp, previous_bsp=None, parent_context=None, child_level_chan=None) -> Dict[str, float]:
     klu = klus[pos]
     high_low_range = float(klu.high) - float(klu.low)
     body_high = max(float(klu.open), float(klu.close))
@@ -203,46 +386,147 @@ def strategy_feature(klus: List, pos: int, bsp, previous_bsp=None) -> Dict[str, 
             continue
 
     feature.update(previous_bsp_feature(klu, bsp, previous_bsp))
+    feature.update(bi_bar_feature(klus, bsp.bi))
+    feature.update(parent_level_feature(klu, parent_context))
+    if child_level_chan is not None:
+        feature.update(child_level_feature(klu, bsp.klu.klc, child_level_chan))
     return feature
 
 
-def build_chan(code: str, begin_time: str, end_time: Optional[str]) -> CChan:
+def make_chan_config(bs_type: str, trigger_step: bool = True) -> CChanConfig:
     config = CChanConfig({
-        "trigger_step": True,
+        "trigger_step": trigger_step,
         "bi_strict": True,
         "skip_step": 0,
+        "kl_data_check": False,
         "divergence_rate": float("inf"),
         "bsp2_follow_1": False,
         "bsp3_follow_1": False,
         "min_zs_cnt": 0,
         "bs1_peak": False,
         "macd_algo": "peak",
-        "bs_type": "1,1p",
+        "bs_type": bs_type,
         "print_warning": True,
         "zs_algo": "normal",
     })
+    return config
+
+
+def build_chan(code: str, begin_time: str, end_time: Optional[str]) -> CChan:
+    config = make_chan_config("1,1p", trigger_step=True)
     return CChan(
         code=code,
         begin_time=begin_time,
         end_time=end_time,
         data_src=DATA_SRC.CACHE_DB,
-        lv_list=[MODEL_KL_TYPE],
+        lv_list=[MODEL_KL_TYPE, CHILD_KL_TYPE],
         config=config,
         autype=AUTYPE.QFQ,
     )
 
 
-def collect_buy_signals(chan: CChan, code: str) -> Tuple[List[SignalSample], List]:
+def build_parent_chan(code: str, begin_time: str, end_time: Optional[str]) -> CChan:
+    config = make_chan_config("1,2,3a,1p,2s,3b", trigger_step=True)
+    return CChan(
+        code=code,
+        begin_time=begin_time,
+        end_time=end_time,
+        data_src=DATA_SRC.CACHE_DB,
+        lv_list=[PARENT_KL_TYPE],
+        config=config,
+        autype=AUTYPE.QFQ,
+    )
+
+
+def build_parent_level_context(code: str, begin_time: str, end_time: Optional[str]) -> Tuple[List[str], Dict[str, Dict[str, float]]]:
+    context_by_date: Dict[str, Dict[str, float]] = {}
+    parent_chan = build_parent_chan(code, begin_time, end_time)
+    for parent_snapshot in parent_chan.step_load():
+        parent_level = parent_snapshot[0]
+        parent_klus = list(parent_level.klu_iter())
+        if not parent_klus:
+            continue
+        last_klu = parent_klus[-1]
+        pos = len(parent_klus) - 1
+        high_low_range = float(last_klu.high) - float(last_klu.low)
+        context = {
+            "parent_close": float(last_klu.close),
+            "parent_return": safe_div(float(last_klu.close) - float(last_klu.open), float(last_klu.open)),
+            "parent_range": safe_div(float(last_klu.high) - float(last_klu.low), float(last_klu.open)),
+            "parent_close_pos": safe_div(float(last_klu.close) - float(last_klu.low), high_low_range, 0.5),
+            "parent_volume_ratio_5": ratio_to_recent_avg(parent_klus, pos, DATA_FIELD.FIELD_VOLUME, 5),
+            "parent_bi_count": float(len(parent_level.bi_list)),
+            "parent_last_bi_dir_up": 0.0,
+            "parent_last_bi_is_sure": 0.0,
+            "parent_latest_bsp_exists": 0.0,
+            "parent_latest_bsp_is_buy": 0.0,
+            "parent_latest_bsp_price_change": 0.0,
+            "parent_latest_bsp_bi_gap": 0.0,
+            "parent_latest_bsp_klu_gap": 0.0,
+            "parent_latest_bsp_divergence_rate": 0.0,
+        }
+        for bsp_type in PARENT_BSP_TYPES:
+            context[f"parent_latest_bsp_type_{bsp_type}"] = 0.0
+
+        if len(parent_level.bi_list) > 0:
+            last_bi = parent_level.bi_list[-1]
+            context["parent_last_bi_dir_up"] = float(bool(last_bi.is_up()))
+            context["parent_last_bi_is_sure"] = float(bool(last_bi.is_sure))
+
+        latest_parent_bsp_list = parent_snapshot.get_latest_bsp(idx=0, number=1)
+        if latest_parent_bsp_list:
+            latest_parent_bsp = latest_parent_bsp_list[0]
+            bsp_price = float(latest_parent_bsp.klu.close)
+            context.update({
+                "parent_latest_bsp_exists": 1.0,
+                "parent_latest_bsp_is_buy": float(bool(latest_parent_bsp.is_buy)),
+                "parent_latest_bsp_price_change": safe_div(float(last_klu.close) - bsp_price, bsp_price),
+                "parent_latest_bsp_bi_gap": float(len(parent_level.bi_list) - 1 - latest_parent_bsp.bi.idx),
+                "parent_latest_bsp_klu_gap": float(last_klu.idx - latest_parent_bsp.klu.idx),
+            })
+            for bsp_type in str(latest_parent_bsp.type2str()).split(","):
+                bsp_type = bsp_type.strip()
+                if bsp_type:
+                    context[f"parent_latest_bsp_type_{bsp_type}"] = 1.0
+            for feature_name, value in latest_parent_bsp.features.items():
+                if feature_name != "divergence_rate" or value is None:
+                    continue
+                try:
+                    context["parent_latest_bsp_divergence_rate"] = float(value)
+                except (TypeError, ValueError):
+                    pass
+
+        context_by_date[ctime_to_date_str(last_klu.time)] = context
+    parent_dates = sorted(context_by_date)
+    return parent_dates, context_by_date
+
+
+def pick_parent_context(parent_dates: List[str], context_by_date: Dict[str, Dict[str, float]], entry_klu) -> Optional[Dict[str, float]]:
+    entry_date = ctime_to_date_str(entry_klu.time)
+    pos = bisect_left(parent_dates, entry_date) - 1
+    if pos < 0:
+        return None
+    return context_by_date[parent_dates[pos]]
+
+
+def collect_buy_signals(
+    chan: CChan,
+    code: str,
+    parent_dates: Optional[List[str]] = None,
+    parent_context_by_date: Optional[Dict[str, Dict[str, float]]] = None,
+) -> Tuple[List[SignalSample], List]:
     samples: List[SignalSample] = []
     seen_bsp_klu_idx = set()
+    parent_dates = parent_dates or []
+    parent_context_by_date = parent_context_by_date or {}
 
     for chan_snapshot in chan.step_load():
-        level_chan = chan_snapshot[0]
+        level_chan = chan_snapshot[MODEL_LV_IDX]
         if len(level_chan) < 2:
             continue
 
         last_klu = level_chan[-1][-1]
-        bsp_list = chan_snapshot.get_latest_bsp()
+        bsp_list = chan_snapshot.get_latest_bsp(idx=MODEL_LV_IDX)
         if not bsp_list:
             continue
 
@@ -269,6 +553,7 @@ def collect_buy_signals(chan: CChan, code: str) -> Tuple[List[SignalSample], Lis
 
         final_klus_so_far = list(level_chan.klu_iter())
         pos = len(final_klus_so_far) - 1
+        parent_context = pick_parent_context(parent_dates, parent_context_by_date, last_klu)
         samples.append(
             SignalSample(
                 code=code,
@@ -276,12 +561,19 @@ def collect_buy_signals(chan: CChan, code: str) -> Tuple[List[SignalSample], Lis
                 open_klu_idx=int(last_klu.idx),
                 open_time=ctime_to_str(last_klu.time),
                 entry_price=float(last_klu.close),
-                feature=strategy_feature(final_klus_so_far, pos, last_bsp, previous_bsp),
+                feature=strategy_feature(
+                    final_klus_so_far,
+                    pos,
+                    last_bsp,
+                    previous_bsp,
+                    parent_context,
+                    chan_snapshot[CHILD_LV_IDX],
+                ),
             )
         )
         seen_bsp_klu_idx.add(last_bsp.klu.idx)
 
-    final_klus = list(chan[0].klu_iter())
+    final_klus = list(chan[MODEL_LV_IDX].klu_iter())
     return samples, final_klus
 
 
@@ -476,10 +768,10 @@ def train_model(
     model = Pipeline([
         ("imputer", SimpleImputer(strategy="median")),
         ("clf", RandomForestClassifier(
-            n_estimators=300,
-            max_depth=4,
-            min_samples_leaf=5,
-            class_weight="balanced_subsample",
+            n_estimators=MODEL_PARAMS["n_estimators"],
+            max_depth=MODEL_PARAMS["max_depth"],
+            min_samples_leaf=MODEL_PARAMS["min_samples_leaf"],
+            class_weight=MODEL_PARAMS["class_weight"],
             random_state=random_state,
         )),
     ])
@@ -584,6 +876,39 @@ def write_feature_importance(path: Path, importance_rows: List[Dict[str, float]]
         writer.writerows(importance_rows)
 
 
+def codes_digest(codes: List[str]) -> str:
+    joined_codes = "\n".join(sorted(codes))
+    return hashlib.sha256(joined_codes.encode("utf-8")).hexdigest()
+
+
+def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict:
+    model_params = dict(MODEL_PARAMS)
+    model_params["random_state"] = args.random_state
+    return {
+        "begin_time": args.begin_time,
+        "end_time": args.end_time,
+        "horizon": args.horizon,
+        "take_profit": args.take_profit,
+        "stop_loss": args.stop_loss,
+        "target_bsp_types": sorted(TARGET_BSP_TYPES),
+        "main_bs_type": "1,1p",
+        "parent_bs_type": "1,2,3a,1p,2s,3b",
+        "data_src": DATA_SRC.CACHE_DB.name,
+        "model_kl_type": DB_KL_TYPE,
+        "parent_kl_type": PARENT_DB_KL_TYPE,
+        "child_kl_type": CHILD_DB_KL_TYPE,
+        "split_mode": split_info["mode"],
+        "split_time": split_info["split_time"],
+        "train_ratio": args.train_ratio,
+        "all_codes": bool(args.all),
+        "requested_code": args.code,
+        "requested_codes": args.codes,
+        "code_count": len(codes),
+        "codes_sha256": codes_digest(codes),
+        "model": model_params,
+    }
+
+
 def ensure_two_classes(samples: List[SignalSample], name: str) -> None:
     classes = {sample.label for sample in samples}
     if len(classes) < 2:
@@ -621,8 +946,9 @@ if __name__ == "__main__":
     samples: List[SignalSample] = []
     for code in codes:
         try:
+            parent_dates, parent_context_by_date = build_parent_level_context(code, args.begin_time, args.end_time)
             chan = build_chan(code, args.begin_time, args.end_time)
-            code_samples, final_klus = collect_buy_signals(chan, code)
+            code_samples, final_klus = collect_buy_signals(chan, code, parent_dates, parent_context_by_date)
             labeled_code_samples = label_samples(code_samples, final_klus, args.horizon, args.take_profit, args.stop_loss)
             samples.extend(labeled_code_samples)
             print(f"{code}: 有效样本 {len(labeled_code_samples)}")
@@ -650,12 +976,15 @@ if __name__ == "__main__":
         args.random_state,
     )
     metrics["kl_type"] = DB_KL_TYPE
+    metrics["parent_kl_type"] = PARENT_DB_KL_TYPE
+    metrics["child_kl_type"] = CHILD_DB_KL_TYPE
     metrics["split_mode"] = split_info["mode"]
     metrics["split_time"] = split_info["split_time"]
     metrics["train_period"] = split_info["train_period"]
     metrics["test_period"] = split_info["test_period"]
     metrics["train_code_count"] = len({sample.code for sample in train_samples})
     metrics["test_code_count"] = len({sample.code for sample in test_samples})
+    metrics["run_config"] = build_run_config(args, codes, split_info)
     feature_importance = get_feature_importance(model, feature_meta)
 
     output_dir.mkdir(parents=True, exist_ok=True)
