@@ -713,6 +713,16 @@ def split_by_time(
     return train_samples, test_samples, split_info
 
 
+def sample_period(sample: SignalSample) -> str:
+    return sample.open_time[:7]
+
+
+def parse_period_list(period_text: Optional[str]) -> Optional[List[str]]:
+    if not period_text:
+        return None
+    return [period.strip().replace("-", "/") for period in period_text.split(",") if period.strip()]
+
+
 def metric_or_none(func, y_true, y_score) -> Optional[float]:
     try:
         value = float(func(y_true, y_score))
@@ -795,6 +805,62 @@ def summarize_time_period_metrics(
             "score_buckets": score_buckets,
         })
     return period_rows
+
+
+def run_walk_forward_validation(
+    samples: List[SignalSample],
+    test_periods: List[str],
+    random_state: int,
+    min_train_samples: int,
+    min_test_samples: int,
+) -> List[Dict]:
+    sorted_samples = sorted(samples, key=lambda sample: (sample.open_time, sample.code, sample.open_klu_idx))
+    rows = []
+    for period in sorted(dict.fromkeys(test_periods)):
+        train_samples = [sample for sample in sorted_samples if sample_period(sample) < period]
+        test_samples = [sample for sample in sorted_samples if sample_period(sample) == period]
+        row = {
+            "mode": "expanding_window",
+            "test_period": period,
+            "train_period": f"{train_samples[0].open_time} ~ {train_samples[-1].open_time}" if train_samples else "",
+            "test_time_range": f"{test_samples[0].open_time} ~ {test_samples[-1].open_time}" if test_samples else "",
+            "train_samples": len(train_samples),
+            "test_samples": len(test_samples),
+            "train_code_count": len({sample.code for sample in train_samples}),
+            "test_code_count": len({sample.code for sample in test_samples}),
+        }
+
+        if len(train_samples) < min_train_samples:
+            row["status"] = "skipped"
+            row["skip_reason"] = f"训练样本不足：{len(train_samples)} < {min_train_samples}"
+            rows.append(row)
+            continue
+        if len(test_samples) < min_test_samples:
+            row["status"] = "skipped"
+            row["skip_reason"] = f"测试样本不足：{len(test_samples)} < {min_test_samples}"
+            rows.append(row)
+            continue
+        train_classes = {sample.label for sample in train_samples}
+        test_classes = {sample.label for sample in test_samples}
+        if len(train_classes) < 2:
+            row["status"] = "skipped"
+            row["skip_reason"] = f"训练集只有一个类别：{sorted(train_classes)}"
+            rows.append(row)
+            continue
+        if len(test_classes) < 2:
+            row["status"] = "skipped"
+            row["skip_reason"] = f"测试集只有一个类别：{sorted(test_classes)}"
+            rows.append(row)
+            continue
+
+        feature_meta = build_feature_meta(train_samples)
+        _, window_metrics, _ = train_model(train_samples, test_samples, feature_meta, random_state)
+        window_metrics.pop("time_period_metrics", None)
+        row.update(window_metrics)
+        row["status"] = "ok"
+        row["feature_count"] = len(feature_meta)
+        rows.append(row)
+    return rows
 
 
 def train_model(
@@ -944,6 +1010,10 @@ def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict
         "split_mode": split_info["mode"],
         "split_time": split_info["split_time"],
         "train_ratio": args.train_ratio,
+        "walk_forward": bool(args.walk_forward),
+        "walk_forward_test_periods": parse_period_list(args.walk_forward_test_periods),
+        "walk_forward_min_train_samples": args.walk_forward_min_train_samples,
+        "walk_forward_min_test_samples": args.walk_forward_min_test_samples,
         "all_codes": bool(args.all),
         "requested_code": args.code,
         "requested_codes": args.codes,
@@ -972,6 +1042,10 @@ def parse_args():
     parser.add_argument("--stop-loss", type=float, default=0.03, help="先触发该回撤则标签为0。")
     parser.add_argument("--train-ratio", type=float, default=0.7, help="未指定 --split-time 时，按时间排序后的训练样本占比。")
     parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--walk-forward", action=argparse.BooleanOptionalAction, default=True, help="是否输出按月份滚动训练验证结果。")
+    parser.add_argument("--walk-forward-test-periods", default=None, help="逗号分隔的 walk-forward 测试月份，例如 2026/03,2026/04；默认使用主测试集覆盖的月份。")
+    parser.add_argument("--walk-forward-min-train-samples", type=int, default=100, help="walk-forward 单个窗口最少训练样本数。")
+    parser.add_argument("--walk-forward-min-test-samples", type=int, default=50, help="walk-forward 单个窗口最少测试样本数。")
     parser.add_argument("--output-dir", default="Debug/model_output/strategy_demo7")
     return parser.parse_args()
 
@@ -1029,6 +1103,17 @@ if __name__ == "__main__":
     metrics["train_code_count"] = len({sample.code for sample in train_samples})
     metrics["test_code_count"] = len({sample.code for sample in test_samples})
     metrics["run_config"] = build_run_config(args, codes, split_info)
+    if args.walk_forward:
+        walk_forward_test_periods = parse_period_list(args.walk_forward_test_periods)
+        if walk_forward_test_periods is None:
+            walk_forward_test_periods = sorted({sample_period(sample) for sample in test_samples})
+        metrics["walk_forward_metrics"] = run_walk_forward_validation(
+            samples,
+            walk_forward_test_periods,
+            args.random_state,
+            args.walk_forward_min_train_samples,
+            args.walk_forward_min_test_samples,
+        )
     feature_importance = get_feature_importance(model, feature_meta)
 
     output_dir.mkdir(parents=True, exist_ok=True)
