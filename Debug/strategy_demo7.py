@@ -33,10 +33,10 @@ from Common.CEnum import AUTYPE, DATA_FIELD, DATA_SRC, KL_TYPE
 
 
 MODEL_KL_TYPE = KL_TYPE.K_30M
-CHILD_KL_TYPE = KL_TYPE.K_5M
+CHILD_KL_TYPE = KL_TYPE.K_15M
 PARENT_KL_TYPE = KL_TYPE.K_DAY
 DB_KL_TYPE = "30M"
-CHILD_DB_KL_TYPE = "5M"
+CHILD_DB_KL_TYPE = "15M"
 PARENT_DB_KL_TYPE = "DAY"
 TARGET_BSP_TYPES = {"1", "1p"}
 MODEL_LV_IDX = 0
@@ -715,7 +715,10 @@ def split_by_time(
 
 def metric_or_none(func, y_true, y_score) -> Optional[float]:
     try:
-        return float(func(y_true, y_score))
+        value = float(func(y_true, y_score))
+        if not math.isfinite(value):
+            return None
+        return value
     except ValueError:
         return None
 
@@ -752,6 +755,46 @@ def summarize_score_buckets(
             "avg_max_drawdown": avg_optional(sample.max_drawdown for sample in top_samples),
         })
     return bucket_rows
+
+
+def summarize_time_period_metrics(
+    test_prob,
+    test_samples: List[SignalSample],
+    buckets: Tuple[float, ...] = (0.05, 0.10, 0.20),
+) -> List[Dict]:
+    period_items: Dict[str, List[Tuple[float, SignalSample]]] = {}
+    for score, sample in zip(test_prob, test_samples):
+        period = sample.open_time[:7]
+        period_items.setdefault(period, []).append((float(score), sample))
+
+    period_rows = []
+    for period in sorted(period_items):
+        items = period_items[period]
+        period_scores = [score for score, _ in items]
+        period_samples = [sample for _, sample in items]
+        y_true = [int(sample.label) for sample in period_samples]
+        has_two_classes = len(set(y_true)) == 2
+        score_buckets = summarize_score_buckets(period_scores, period_samples, buckets)
+        bucket_by_pct = {row["top_pct"]: row for row in score_buckets}
+
+        period_rows.append({
+            "period": period,
+            "sample_count": len(period_samples),
+            "positive_rate": sum(y_true) / len(y_true),
+            "auc": metric_or_none(roc_auc_score, y_true, period_scores) if has_two_classes else None,
+            "average_precision": metric_or_none(average_precision_score, y_true, period_scores) if has_two_classes else None,
+            "avg_score": sum(period_scores) / len(period_scores),
+            "avg_realized_return": avg_optional(sample.realized_return for sample in period_samples),
+            "avg_forward_return": avg_optional(sample.forward_return for sample in period_samples),
+            "top5pct_hit_rate": bucket_by_pct[0.05]["hit_rate"],
+            "top5pct_avg_realized_return": bucket_by_pct[0.05]["avg_realized_return"],
+            "top10pct_hit_rate": bucket_by_pct[0.10]["hit_rate"],
+            "top10pct_avg_realized_return": bucket_by_pct[0.10]["avg_realized_return"],
+            "top20pct_hit_rate": bucket_by_pct[0.20]["hit_rate"],
+            "top20pct_avg_realized_return": bucket_by_pct[0.20]["avg_realized_return"],
+            "score_buckets": score_buckets,
+        })
+    return period_rows
 
 
 def train_model(
@@ -801,6 +844,7 @@ def train_model(
         "test_top20pct_hit_rate": top20_bucket["hit_rate"],
         "test_top20pct_avg_realized_return": top20_bucket["avg_realized_return"],
         "score_buckets": score_buckets,
+        "time_period_metrics": summarize_time_period_metrics(test_prob, test_samples),
     }
     return model, metrics, test_prob
 
