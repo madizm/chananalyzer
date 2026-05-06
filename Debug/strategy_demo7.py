@@ -49,6 +49,24 @@ MODEL_PARAMS = {
     "min_samples_leaf": 5,
     "class_weight": "balanced_subsample",
 }
+POST_FILTER_RULES = (
+    {
+        "name": "entry_upper_shadow_le_0_3",
+        "description": "entry_upper_shadow <= 0.3",
+    },
+    {
+        "name": "entry_and_child_close_pos",
+        "description": "entry_close_pos >= 0.5 and child_close_pos >= 0.4",
+    },
+    {
+        "name": "entry_child_close_pos_upper_shadow",
+        "description": "entry_close_pos >= 0.5 and child_close_pos >= 0.4 and entry_upper_shadow <= 0.3",
+    },
+    {
+        "name": "entry_child_close_pos_upper_shadow_divergence",
+        "description": "entry_close_pos >= 0.5 and child_close_pos >= 0.4 and entry_upper_shadow <= 0.3 and prev_bsp_divergence_rate <= 1.0",
+    },
+)
 
 
 @dataclass
@@ -843,6 +861,126 @@ def summarize_score_thresholds(
     return rows
 
 
+def sample_feature_value(sample: SignalSample, name: str, default: float = 0.0) -> float:
+    value = sample.feature.get(name, default)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def pass_post_filter(sample: SignalSample, rule_name: str) -> bool:
+    entry_close_pos = sample_feature_value(sample, "entry_close_pos")
+    child_close_pos = sample_feature_value(sample, "child_close_pos")
+    entry_upper_shadow = sample_feature_value(sample, "entry_upper_shadow")
+    prev_divergence = sample_feature_value(sample, "prev_bsp_divergence_rate")
+
+    if rule_name == "entry_upper_shadow_le_0_3":
+        return entry_upper_shadow <= 0.3
+    if rule_name == "entry_and_child_close_pos":
+        return entry_close_pos >= 0.5 and child_close_pos >= 0.4
+    if rule_name == "entry_child_close_pos_upper_shadow":
+        return entry_close_pos >= 0.5 and child_close_pos >= 0.4 and entry_upper_shadow <= 0.3
+    if rule_name == "entry_child_close_pos_upper_shadow_divergence":
+        return (
+            entry_close_pos >= 0.5
+            and child_close_pos >= 0.4
+            and entry_upper_shadow <= 0.3
+            and prev_divergence <= 1.0
+        )
+    raise ValueError(f"未知后处理过滤规则：{rule_name}")
+
+
+def metric_delta(baseline: Dict, filtered: Dict) -> Dict:
+    return {
+        "sample_keep_rate": safe_div(float(filtered["sample_count"]), float(baseline["sample_count"])) if baseline["sample_count"] else None,
+        "hit_rate_delta": filtered["hit_rate"] - baseline["hit_rate"] if filtered["hit_rate"] is not None else None,
+        "stop_loss_rate_delta": (
+            filtered["exit_reason_rates"]["stop_loss"] - baseline["exit_reason_rates"]["stop_loss"]
+            if filtered["sample_count"] else None
+        ),
+        "avg_realized_return_after_cost_delta": (
+            filtered["avg_realized_return_after_cost"] - baseline["avg_realized_return_after_cost"]
+            if filtered["avg_realized_return_after_cost"] is not None else None
+        ),
+        "avg_max_drawdown_delta": (
+            filtered["avg_max_drawdown"] - baseline["avg_max_drawdown"]
+            if filtered["avg_max_drawdown"] is not None else None
+        ),
+    }
+
+
+def summarize_post_filter_metrics(
+    test_prob,
+    test_samples: List[SignalSample],
+    score_thresholds: List[float],
+    trade_cost: float,
+    buckets: Tuple[float, ...] = (0.05, 0.10, 0.20, 0.30),
+) -> Dict:
+    scored_samples = sorted(
+        [(float(score), sample) for score, sample in zip(test_prob, test_samples)],
+        key=lambda item: item[0],
+        reverse=True,
+    )
+
+    rows = {
+        "rules": list(POST_FILTER_RULES),
+        "score_buckets": [],
+        "score_thresholds": [],
+    }
+
+    for bucket in buckets:
+        top_n = max(1, int(len(scored_samples) * bucket))
+        group = scored_samples[:top_n]
+        baseline = summarize_scored_group([score for score, _ in group], [sample for _, sample in group], trade_cost)
+        bucket_row = {
+            "top_pct": bucket,
+            "baseline": baseline,
+            "filters": [],
+        }
+        for rule in POST_FILTER_RULES:
+            filtered_group = [(score, sample) for score, sample in group if pass_post_filter(sample, rule["name"])]
+            filtered = summarize_scored_group(
+                [score for score, _ in filtered_group],
+                [sample for _, sample in filtered_group],
+                trade_cost,
+            )
+            bucket_row["filters"].append({
+                "rule": rule["name"],
+                "description": rule["description"],
+                "filtered": filtered,
+                "delta": metric_delta(baseline, filtered),
+            })
+        rows["score_buckets"].append(bucket_row)
+
+    for threshold in score_thresholds:
+        group = [(score, sample) for score, sample in scored_samples if score >= threshold]
+        baseline = summarize_scored_group([score for score, _ in group], [sample for _, sample in group], trade_cost)
+        threshold_row = {
+            "threshold": threshold,
+            "baseline": baseline,
+            "filters": [],
+        }
+        for rule in POST_FILTER_RULES:
+            filtered_group = [(score, sample) for score, sample in group if pass_post_filter(sample, rule["name"])]
+            filtered = summarize_scored_group(
+                [score for score, _ in filtered_group],
+                [sample for _, sample in filtered_group],
+                trade_cost,
+            )
+            threshold_row["filters"].append({
+                "rule": rule["name"],
+                "description": rule["description"],
+                "filtered": filtered,
+                "delta": metric_delta(baseline, filtered),
+            })
+        rows["score_thresholds"].append(threshold_row)
+
+    return rows
+
+
 def summarize_time_period_metrics(
     test_prob,
     test_samples: List[SignalSample],
@@ -1003,6 +1141,7 @@ def train_model(
         "test_exit_reason_summary": exit_reason_summary(test_samples),
         "score_buckets": score_buckets,
         "score_thresholds": summarize_score_thresholds(test_prob, test_samples, score_thresholds, trade_cost),
+        "post_filter_metrics": summarize_post_filter_metrics(test_prob, test_samples, score_thresholds, trade_cost),
         "time_period_metrics": summarize_time_period_metrics(test_prob, test_samples, trade_cost=trade_cost),
     }
     return model, metrics, test_prob
@@ -1105,6 +1244,7 @@ def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict
         "train_ratio": args.train_ratio,
         "trade_cost": args.trade_cost,
         "score_thresholds": parse_float_list(args.score_thresholds),
+        "post_filter_rules": list(POST_FILTER_RULES),
         "walk_forward": bool(args.walk_forward),
         "walk_forward_test_periods": parse_period_list(args.walk_forward_test_periods),
         "walk_forward_min_train_samples": args.walk_forward_min_train_samples,
