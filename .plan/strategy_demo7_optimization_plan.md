@@ -296,6 +296,153 @@
 - 重点检查 `parent_range`、`ret_10`、`volatility_10`、`turnover_ratio_5`、`child_range`、`child_latest_bsp_klu_gap`、`child_latest_bsp_price_change`。
 - 如果能找到稳定的高止损区间，再增加过滤规则或新特征。
 
+## 2026/04 高分止损分析结论：2026-05-05
+
+已重建 `2026/04 walk-forward` 口径，分析 `score >= 0.60 / 0.65` 的高分样本。
+
+输出文件：
+
+- `Debug/model_output/strategy_demo7/high_score_failure_analysis_202604.json`
+- `Debug/model_output/strategy_demo7/high_score_samples_202604.csv`
+
+分析口径：
+
+- 训练集：`open_time < 2026/04`
+- 测试集：`open_time` 属于 `2026/04`
+- 重点比较：高分止损样本 vs 高分止盈样本
+
+整体观察：
+
+- 高分止损不是由少数个股集中导致，`score >= 0.65` 中止损最多的个股也只有约 2 笔。
+- 行业有一定集中，但不能直接作为单独过滤条件。
+- 止损较多行业：电网设备、电力、风电设备、软件服务、半导体、光伏设备。
+- 止盈较多行业：光伏设备、半导体、电网设备、化学原料、通用设备。
+- 电网、光伏、半导体同时出现在止损和止盈里，说明行业只能作为辅助解释，不能简单剔除。
+
+`score >= 0.65` 的高分止损样本，相比高分止盈样本，最明显的特征差异：
+
+- `child_close_pos` 更低：止损中位数 `0.3125`，止盈中位数 `0.5854`
+- `entry_close_pos` 更低：止损中位数 `0.3964`，止盈中位数 `0.6842`
+- `entry_upper_shadow` 更高：止损中位数 `0.3134`，止盈中位数 `0.1852`
+- `entry_kline_return` 更弱：止损中位数 `-0.0025`，止盈中位数 `0.0109`
+- `child_return` 更弱：止损中位数 `-0.0056`，止盈中位数 `-0.0027`
+- `ma_dist_10` 更弱：止损中位数 `-0.0098`，止盈中位数 `0.0017`
+- `prev_bsp_divergence_rate` 更高：止损中位数 `1.1644`，止盈中位数 `0.7230`
+
+初步解释：
+
+- 模型确实给出了高分，但入场那根 30M K 线和 15M 子级别走势并不强。
+- 高分止损样本常见形态是：收盘位置偏低、上影线偏高、入场 K 线收益弱、15M 子级别位置弱、短线均线距离偏弱。
+- 这说明当前模型在部分阶段会把“结构位置较好”误判成“立即可交易”，但实际入场动能不足，容易先触发止损。
+
+下一步过滤规则候选：
+
+- 过滤 `entry_close_pos < 0.5`
+- 过滤 `child_close_pos < 0.4`
+- 过滤 `entry_upper_shadow > 0.3`
+- 过滤 `entry_kline_return <= 0`
+- 过滤 `ma_dist_10 < 0`
+- 观察并验证 `prev_bsp_divergence_rate` 过高是否更容易止损
+
+下一步应先做规则回放评估：
+
+- 在 `2026/04 walk-forward` 的 `score >= 0.60 / 0.65` 样本上逐个加入候选过滤条件。
+- 观察每个过滤条件对样本数、止损率、止盈率、扣成本后平均收益的影响。
+- 如果单个过滤条件有效，再测试组合过滤条件。
+- 过滤规则必须同时在 walk-forward 2026/03 和 2026/04 上验证，避免只针对 2026/04 过拟合。
+
+## 高分过滤规则回放结论：2026-05-05
+
+已在 `2026/04 walk-forward` 高分样本上验证候选过滤规则，并用 `2026/03 walk-forward` 做交叉检查。
+
+输出文件：
+
+- `Debug/model_output/strategy_demo7/rule_replay_202604.json`
+- `Debug/model_output/strategy_demo7/rule_replay_202604.csv`
+- `Debug/model_output/strategy_demo7/rule_replay_202603.json`
+- `Debug/model_output/strategy_demo7/rule_replay_202603.csv`
+
+候选单条规则：
+
+- `keep_entry_close_pos_ge_0_5`: `entry_close_pos >= 0.5`
+- `keep_child_close_pos_ge_0_4`: `child_close_pos >= 0.4`
+- `keep_entry_upper_shadow_le_0_3`: `entry_upper_shadow <= 0.3`
+- `keep_entry_kline_return_gt_0`: `entry_kline_return > 0`
+- `keep_ma_dist_10_ge_0`: `ma_dist_10 >= 0`
+- `keep_prev_bsp_divergence_rate_le_0_8`: `prev_bsp_divergence_rate <= 0.8`
+- `keep_prev_bsp_divergence_rate_le_1_0`: `prev_bsp_divergence_rate <= 1.0`
+- `keep_prev_bsp_divergence_rate_le_1_2`: `prev_bsp_divergence_rate <= 1.2`
+
+候选组合规则：
+
+- `combo_close_pos`
+  - `entry_close_pos >= 0.5`
+  - `child_close_pos >= 0.4`
+- `combo_kline_strength`
+  - `entry_close_pos >= 0.5`
+  - `entry_upper_shadow <= 0.3`
+  - `entry_kline_return > 0`
+- `combo_child_and_kline_strength`
+  - `child_close_pos >= 0.4`
+  - `entry_close_pos >= 0.5`
+  - `entry_upper_shadow <= 0.3`
+  - `entry_kline_return > 0`
+- `combo_ma_and_close_pos`
+  - `ma_dist_10 >= 0`
+  - `entry_close_pos >= 0.5`
+  - `child_close_pos >= 0.4`
+- `combo_strength_divergence_1_0`
+  - `entry_close_pos >= 0.5`
+  - `child_close_pos >= 0.4`
+  - `entry_upper_shadow <= 0.3`
+  - `prev_bsp_divergence_rate <= 1.0`
+
+2026/04，`score >= 0.60`：
+
+- 基线：样本 `360`，止盈率 `0.3667`，止损率 `0.4583`，扣成本收益 `0.0050`
+- `entry_close_pos >= 0.5`：样本 `243`，止盈率 `0.428`，止损率 `0.379`，扣成本收益 `0.0106`
+- `entry_upper_shadow <= 0.3`：样本 `213`，止盈率 `0.432`，止损率 `0.394`，扣成本收益 `0.0101`
+- `child_close_pos >= 0.4`：样本 `211`，止盈率 `0.403`，止损率 `0.374`，扣成本收益 `0.0099`
+- `combo_close_pos`：样本 `151`，止盈率 `0.430`，止损率 `0.344`，扣成本收益 `0.0118`
+- `combo_strength_divergence_1_0`：样本 `55`，止盈率 `0.473`，止损率 `0.309`，扣成本收益 `0.0160`
+
+2026/04，`score >= 0.65`：
+
+- 基线：样本 `120`，止盈率 `0.3583`，止损率 `0.5167`，扣成本收益 `0.0018`
+- `child_close_pos >= 0.4`：样本 `65`，止盈率 `0.492`，止损率 `0.338`，扣成本收益 `0.0140`
+- `entry_close_pos >= 0.5`：样本 `65`，止盈率 `0.462`，止损率 `0.385`，扣成本收益 `0.0106`
+- `combo_close_pos`：样本 `39`，止盈率 `0.590`，止损率 `0.256`，扣成本收益 `0.0206`
+- `combo_ma_and_close_pos`：样本 `26`，止盈率 `0.577`，止损率 `0.192`，扣成本收益 `0.0218`
+- `combo_strength_divergence_1_0`：样本 `13`，止盈率 `0.769`，止损率 `0.154`，扣成本收益 `0.0343`
+
+2026/03 交叉检查：
+
+- `score >= 0.60` 基线：样本 `165`，止盈率 `0.315`，止损率 `0.618`，扣成本收益 `-0.0033`
+- `entry_upper_shadow <= 0.3`：样本 `93`，止盈率 `0.366`，止损率 `0.548`，扣成本收益 `0.0018`
+- `ma_dist_10 >= 0`：样本 `79`，止盈率 `0.367`，止损率 `0.532`，扣成本收益 `0.0023`
+- `combo_strength_divergence_1_0`：样本 `26`，止盈率 `0.423`，止损率 `0.308`，扣成本收益 `0.0138`
+
+关键判断：
+
+- 最稳的单条过滤规则是 `entry_upper_shadow <= 0.3`，它在 2026/03 和 2026/04 都降低止损率并改善扣成本收益。
+- `entry_close_pos >= 0.5` 和 `child_close_pos >= 0.4` 在 2026/04 改善明显，尤其对 `score >= 0.65` 的高分样本有效。
+- `ma_dist_10 >= 0` 在 2026/03 高阈值样本上有帮助，在 2026/04 与 close_pos 组合后效果更好。
+- `prev_bsp_divergence_rate <= 1.0` 单独不算最强，但作为组合规则的一部分可以显著降低止损。
+- `combo_strength_divergence_1_0` 效果最好，但样本减少明显，需要更多月份验证。
+
+推荐进入正式评估的后处理过滤候选：
+
+1. `entry_upper_shadow <= 0.3`
+2. `entry_close_pos >= 0.5 and child_close_pos >= 0.4`
+3. `entry_close_pos >= 0.5 and child_close_pos >= 0.4 and entry_upper_shadow <= 0.3`
+4. `entry_close_pos >= 0.5 and child_close_pos >= 0.4 and entry_upper_shadow <= 0.3 and prev_bsp_divergence_rate <= 1.0`
+
+下一步建议：
+
+- 不直接写死交易规则，先在 `strategy_demo7.py` 中新增 `post_filter_metrics`。
+- `post_filter_metrics` 应对 Top 分层、固定分数阈值、walk-forward 窗口分别输出过滤前后对比。
+- 重点观察过滤后样本数、止盈率、止损率、扣成本收益、最大回撤变化。
+
 ## 阶段 1：增强评估可信度
 
 ### 1.1 增加测试集时间段拆分评估
@@ -514,11 +661,11 @@ XGBoost 更擅长非线性和特征交互，但更容易过拟合。
 
 ## 推荐执行顺序
 
-1. 单独分析 2026/04 高分止损样本，检查高分止损信号集中在哪些股票、行业、特征区间和买点类型。
-2. 对比 2026/04 高分止盈样本和高分止损样本，寻找过滤条件或新增特征。
-3. 增加特征组开关，做消融实验，优先验证父级别特征、本级别趋势波动特征、15M 子级别特征的真实贡献。
-4. 再做 RandomForest / XGBoost 参数对照。
-5. 最后考虑实盘候选信号输出。
+1. 做高分样本规则回放评估，验证 `entry_close_pos`、`child_close_pos`、`entry_upper_shadow`、`entry_kline_return`、`ma_dist_10` 等过滤条件。
+2. 对比过滤前后在 walk-forward 2026/03 和 2026/04 的止损率、止盈率和扣成本收益。
+3. 如果过滤规则有效，再考虑把这些过滤逻辑转化为训练特征或后处理交易规则。
+4. 增加特征组开关，做消融实验，优先验证父级别特征、本级别趋势波动特征、15M 子级别特征的真实贡献。
+5. 再做 RandomForest / XGBoost 参数对照。
 
 ## 当前优先级最高的下一步
 
@@ -535,7 +682,7 @@ walk-forward 验证已在 `strategy_demo7.py` 中实现，输出字段为 `metri
 
 全量数据已经重新训练并解读 `walk_forward_metrics`。下一步应解释“命中率排序为何没有稳定转化为收益排序”。
 
-固定分数阈值、Top 分层退出原因和扣成本收益已实现并完成全量重训解读。下一步是分析 2026/04 的高分止损样本，寻找“高分但容易止损”的过滤条件。
+固定分数阈值、Top 分层退出原因和扣成本收益已实现并完成全量重训解读。2026/04 高分止损样本已完成初步分析。下一步是做候选过滤规则回放，验证哪些规则能降低高分样本止损率并改善扣成本收益。
 
 理由：
 
