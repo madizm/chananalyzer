@@ -735,10 +735,38 @@ def sample_period(sample: SignalSample) -> str:
     return sample.open_time[:7]
 
 
+def normalize_period(period: str) -> str:
+    return period.strip().replace("-", "/")[:7]
+
+
+def period_start_time(period: str) -> str:
+    return f"{normalize_period(period)}/01 00:00"
+
+
+def next_period(period: str) -> str:
+    year_text, month_text = normalize_period(period).split("/")
+    year = int(year_text)
+    month = int(month_text)
+    if month == 12:
+        return f"{year + 1:04}/01"
+    return f"{year:04}/{month + 1:02}"
+
+
+def period_end_time_exclusive(period: str) -> str:
+    return f"{next_period(period)}/01 00:00"
+
+
+def walk_forward_period_start(period: str, min_test_time: Optional[str]) -> str:
+    period_start = period_start_time(period)
+    if not min_test_time:
+        return period_start
+    return max(period_start, normalize_split_time(min_test_time))
+
+
 def parse_period_list(period_text: Optional[str]) -> Optional[List[str]]:
     if not period_text:
         return None
-    return [period.strip().replace("-", "/") for period in period_text.split(",") if period.strip()]
+    return [normalize_period(period) for period in period_text.split(",") if period.strip()]
 
 
 def parse_float_list(value_text: Optional[str]) -> List[float]:
@@ -1023,6 +1051,88 @@ def summarize_time_period_metrics(
     return period_rows
 
 
+def weighted_avg(rows: List[Dict], value_key: str, weight_key: str = "sample_count") -> Optional[float]:
+    value_weight_pairs = [
+        (float(row[value_key]), float(row[weight_key]))
+        for row in rows
+        if row.get(value_key) is not None and row.get(weight_key)
+    ]
+    total_weight = sum(weight for _, weight in value_weight_pairs)
+    if not total_weight:
+        return None
+    return sum(value * weight for value, weight in value_weight_pairs) / total_weight
+
+
+def simple_avg(rows: List[Dict], value_key: str) -> Optional[float]:
+    values = [float(row[value_key]) for row in rows if row.get(value_key) is not None]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def summarize_walk_forward_top_buckets(
+    walk_forward_rows: List[Dict],
+    buckets: Tuple[float, ...] = (0.05, 0.10, 0.20),
+) -> Dict:
+    rows = []
+    target_buckets = set(buckets)
+    for window in walk_forward_rows:
+        if window.get("status") != "ok":
+            continue
+        for bucket in window.get("score_buckets", []):
+            top_pct = bucket["top_pct"]
+            if top_pct not in target_buckets:
+                continue
+            exit_rates = bucket["exit_reason_rates"]
+            rows.append({
+                "test_period": window["test_period"],
+                "test_start_time": window.get("test_start_time"),
+                "test_end_time_exclusive": window.get("test_end_time_exclusive"),
+                "test_time_range": window.get("test_time_range"),
+                "train_samples": window["train_samples"],
+                "test_samples": window["test_samples"],
+                "top_pct": top_pct,
+                "selected_samples": bucket["sample_count"],
+                "min_score": bucket["min_score"],
+                "avg_score": bucket["avg_score"],
+                "hit_rate": bucket["hit_rate"],
+                "avg_realized_return_after_cost": bucket["avg_realized_return_after_cost"],
+                "avg_forward_return": bucket["avg_forward_return"],
+                "avg_max_drawdown": bucket["avg_max_drawdown"],
+                "take_profit_rate": exit_rates["take_profit"],
+                "stop_loss_rate": exit_rates["stop_loss"],
+                "timeout_rate": exit_rates["timeout"],
+            })
+
+    aggregate_rows = []
+    for bucket in buckets:
+        bucket_rows = [row for row in rows if row["top_pct"] == bucket]
+        aggregate_rows.append({
+            "top_pct": bucket,
+            "window_count": len(bucket_rows),
+            "total_selected_samples": sum(row["selected_samples"] for row in bucket_rows),
+            "weighted_hit_rate": weighted_avg(bucket_rows, "hit_rate", "selected_samples"),
+            "mean_hit_rate": simple_avg(bucket_rows, "hit_rate"),
+            "weighted_avg_realized_return_after_cost": weighted_avg(
+                bucket_rows,
+                "avg_realized_return_after_cost",
+                "selected_samples",
+            ),
+            "mean_avg_realized_return_after_cost": simple_avg(bucket_rows, "avg_realized_return_after_cost"),
+            "weighted_stop_loss_rate": weighted_avg(bucket_rows, "stop_loss_rate", "selected_samples"),
+            "mean_stop_loss_rate": simple_avg(bucket_rows, "stop_loss_rate"),
+            "weighted_take_profit_rate": weighted_avg(bucket_rows, "take_profit_rate", "selected_samples"),
+            "mean_take_profit_rate": simple_avg(bucket_rows, "take_profit_rate"),
+            "weighted_timeout_rate": weighted_avg(bucket_rows, "timeout_rate", "selected_samples"),
+            "mean_timeout_rate": simple_avg(bucket_rows, "timeout_rate"),
+        })
+
+    return {
+        "rows": rows,
+        "aggregate": aggregate_rows,
+    }
+
+
 def run_walk_forward_validation(
     samples: List[SignalSample],
     test_periods: List[str],
@@ -1031,15 +1141,25 @@ def run_walk_forward_validation(
     min_test_samples: int,
     trade_cost: float,
     score_thresholds: List[float],
+    min_test_time: Optional[str] = None,
 ) -> List[Dict]:
     sorted_samples = sorted(samples, key=lambda sample: (sample.open_time, sample.code, sample.open_klu_idx))
     rows = []
     for period in sorted(dict.fromkeys(test_periods)):
-        train_samples = [sample for sample in sorted_samples if sample_period(sample) < period]
-        test_samples = [sample for sample in sorted_samples if sample_period(sample) == period]
+        period = normalize_period(period)
+        test_start_time = walk_forward_period_start(period, min_test_time)
+        test_end_time = period_end_time_exclusive(period)
+        train_samples = [sample for sample in sorted_samples if sample.open_time < test_start_time]
+        test_samples = [
+            sample
+            for sample in sorted_samples
+            if test_start_time <= sample.open_time < test_end_time
+        ]
         row = {
             "mode": "expanding_window",
             "test_period": period,
+            "test_start_time": test_start_time,
+            "test_end_time_exclusive": test_end_time,
             "train_period": f"{train_samples[0].open_time} ~ {train_samples[-1].open_time}" if train_samples else "",
             "test_time_range": f"{test_samples[0].open_time} ~ {test_samples[-1].open_time}" if test_samples else "",
             "train_samples": len(train_samples),
@@ -1218,6 +1338,33 @@ def write_feature_importance(path: Path, importance_rows: List[Dict[str, float]]
         writer.writerows(importance_rows)
 
 
+def write_walk_forward_top_buckets(path: Path, summary: Dict) -> None:
+    rows = summary.get("rows", [])
+    fieldnames = [
+        "test_period",
+        "test_start_time",
+        "test_end_time_exclusive",
+        "test_time_range",
+        "train_samples",
+        "test_samples",
+        "top_pct",
+        "selected_samples",
+        "min_score",
+        "avg_score",
+        "hit_rate",
+        "avg_realized_return_after_cost",
+        "avg_forward_return",
+        "avg_max_drawdown",
+        "take_profit_rate",
+        "stop_loss_rate",
+        "timeout_rate",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as fid:
+        writer = csv.DictWriter(fid, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def codes_digest(codes: List[str]) -> str:
     joined_codes = "\n".join(sorted(codes))
     return hashlib.sha256(joined_codes.encode("utf-8")).hexdigest()
@@ -1247,6 +1394,7 @@ def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict
         "post_filter_rules": list(POST_FILTER_RULES),
         "walk_forward": bool(args.walk_forward),
         "walk_forward_test_periods": parse_period_list(args.walk_forward_test_periods),
+        "walk_forward_min_test_time": split_info["split_time"],
         "walk_forward_min_train_samples": args.walk_forward_min_train_samples,
         "walk_forward_min_test_samples": args.walk_forward_min_test_samples,
         "all_codes": bool(args.all),
@@ -1355,7 +1503,9 @@ if __name__ == "__main__":
             args.walk_forward_min_test_samples,
             args.trade_cost,
             score_thresholds,
+            split_info["split_time"],
         )
+        metrics["walk_forward_top_bucket_summary"] = summarize_walk_forward_top_buckets(metrics["walk_forward_metrics"])
     feature_importance = get_feature_importance(model, feature_meta)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1375,6 +1525,11 @@ if __name__ == "__main__":
     write_samples_csv(output_dir / "samples.csv", samples, score_by_key)
     write_libsvm(output_dir / "samples.libsvm", samples, feature_meta)
     write_feature_importance(output_dir / "feature_importance.csv", feature_importance)
+    if "walk_forward_top_bucket_summary" in metrics:
+        write_walk_forward_top_buckets(
+            output_dir / "walk_forward_top_buckets.csv",
+            metrics["walk_forward_top_bucket_summary"],
+        )
 
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     print(f"模型文件: {output_dir / 'model.pkl'}")

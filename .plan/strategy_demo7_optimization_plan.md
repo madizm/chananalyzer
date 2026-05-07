@@ -443,6 +443,126 @@
 - `post_filter_metrics` 应对 Top 分层、固定分数阈值、walk-forward 窗口分别输出过滤前后对比。
 - 重点观察过滤后样本数、止盈率、止损率、扣成本收益、最大回撤变化。
 
+## Walk-Forward 边界与 Top 分位汇总：2026-05-07
+
+已在 `strategy_demo7.py` 中修正 walk-forward 的时间边界，并新增 Top 分位汇总输出。
+
+### 已实现内容
+
+walk-forward 边界修正：
+
+- 新增 `normalize_period()`、`period_start_time()`、`next_period()`、`period_end_time_exclusive()`、`walk_forward_period_start()`。
+- `run_walk_forward_validation()` 新增 `min_test_time` 参数。
+- 第一个 walk-forward 测试窗口会从主测试集 `split_time` 开始，而不是从自然月月初开始。
+- 后续窗口仍按自然月展开。
+- 每个窗口新增输出：
+  - `test_start_time`
+  - `test_end_time_exclusive`
+  - `test_time_range`
+- 训练集改为 `sample.open_time < test_start_time`。
+- 测试集改为 `test_start_time <= sample.open_time < test_end_time_exclusive`。
+
+在当前 `split_time = 2026/03/24 10:00` 的口径下：
+
+- `2026/03` walk-forward 测试窗口为 `2026/03/24 10:00 ~ 2026/04/01 00:00`。
+- `2026/04` walk-forward 测试窗口为 `2026/04/01 00:00 ~ 2026/05/01 00:00`。
+
+Top 分位汇总输出：
+
+- `metrics["walk_forward_top_bucket_summary"]`
+- `Debug/model_output/strategy_demo7/walk_forward_top_buckets.csv`
+
+汇总内容：
+
+- `rows`：按 walk-forward 窗口和 Top5 / Top10 / Top20 拉平输出。
+- `aggregate`：跨窗口加权汇总和简单平均。
+
+每行主要字段：
+
+- `test_period`
+- `test_start_time`
+- `test_end_time_exclusive`
+- `top_pct`
+- `selected_samples`
+- `hit_rate`
+- `avg_realized_return_after_cost`
+- `take_profit_rate`
+- `stop_loss_rate`
+- `timeout_rate`
+- `avg_max_drawdown`
+
+### horizon=20 最新口径结论
+
+主测试集：
+
+- `AUC = 0.6425`
+- `Average Precision = 0.4726`
+- 全测试集扣成本收益：`0.0106`
+- Top20 命中率：`0.4690`
+- Top20 扣成本收益：`0.0146`
+
+修正边界后的 walk-forward Top 分位汇总：
+
+- Top5 加权命中率：`0.3683`，加权扣成本收益：`0.0052`，加权止损率：`0.4423`
+- Top10 加权命中率：`0.4225`，加权扣成本收益：`0.0096`，加权止损率：`0.3818`
+- Top20 加权命中率：`0.4515`，加权扣成本收益：`0.0129`，加权止损率：`0.3337`
+
+关键判断：
+
+- 修正边界后，walk-forward 更接近真实未来验证口径。
+- 当前模型在 walk-forward 中仍有一定收益筛选能力，但不是“分数越高越好”。
+- Top20 比 Top5 / Top10 更稳，说明最高分区域仍有阶段性失真。
+- 固定高阈值不稳定，尤其 `score >= 0.65` 在滚动训练下容易选出高止损样本。
+- 当前更合理的交易候选口径是“滚动训练 + Top20 分位池”，不是固定分数阈值，也不是只取 Top5。
+
+### horizon=30 / take_profit=0.10 / stop_loss=0.05 结论
+
+最新一次参数调整：
+
+- `horizon = 30`
+- `take_profit = 0.10`
+- `stop_loss = 0.05`
+- `trade_cost = 0.001`
+
+主测试集：
+
+- 测试正样本率：`0.1313`
+- `AUC = 0.6349`
+- `Average Precision = 0.1951`
+- 全测试集扣成本收益：`0.0190`
+- Top20 命中率：`0.2005`
+- Top20 扣成本收益：`0.0230`
+
+walk-forward Top 分位汇总：
+
+- Top5 加权命中率：`0.2354`，加权扣成本收益：`0.0136`，加权止损率：`0.3570`，加权 timeout 率：`0.4076`
+- Top10 加权命中率：`0.2326`，加权扣成本收益：`0.0174`，加权止损率：`0.3162`，加权 timeout 率：`0.4511`
+- Top20 加权命中率：`0.2273`，加权扣成本收益：`0.0231`，加权止损率：`0.2533`，加权 timeout 率：`0.5193`
+
+关键判断：
+
+- `10% / -5% / 30根` 口径下，正样本率显著降低，命中率不再适合和 `5% / -3% / 20根` 直接横向比较。
+- 该口径下 Top20 仍然最稳，Top5 / Top10 没有带来更高收益，反而止损率更高。
+- 收益很大一部分来自 `timeout` 样本：Top20 的 timeout 率超过 50%。
+- 这组参数更像“较宽止盈止损下的趋势持有评估”，不是高确定性的止盈模型。
+- 后处理过滤规则在该口径下只提供小幅增益，不建议直接写死交易规则。
+
+### 当前下一步
+
+优先拆解 `timeout` 样本：
+
+- 区分 timeout 正收益、timeout 负收益和 timeout 接近 0 的样本。
+- 观察 Top20 的收益是否主要由少数 timeout 正收益贡献。
+- 对比 timeout 样本与 take_profit / stop_loss 样本的特征差异。
+- 输出不同退出原因下的平均收益、中位数收益、收益分位数、最大回撤。
+
+随后做跨目标参数对比：
+
+- 固定同一份 walk-forward 输出格式，对比 `horizon=20, take_profit=0.05, stop_loss=0.03`。
+- 对比 `horizon=30, take_profit=0.10, stop_loss=0.05`。
+- 可增加 `horizon=40` 作为第三组。
+- 评估标准优先使用 walk-forward Top20 的扣成本收益、止损率、timeout 收益质量，而不是单次主测试 AUC。
+
 ## 阶段 1：增强评估可信度
 
 ### 1.1 增加测试集时间段拆分评估
@@ -661,40 +781,40 @@ XGBoost 更擅长非线性和特征交互，但更容易过拟合。
 
 ## 推荐执行顺序
 
-1. 做高分样本规则回放评估，验证 `entry_close_pos`、`child_close_pos`、`entry_upper_shadow`、`entry_kline_return`、`ma_dist_10` 等过滤条件。
-2. 对比过滤前后在 walk-forward 2026/03 和 2026/04 的止损率、止盈率和扣成本收益。
-3. 如果过滤规则有效，再考虑把这些过滤逻辑转化为训练特征或后处理交易规则。
+1. 拆解 timeout 样本收益，确认 Top20 正收益是否主要来自 timeout，以及 timeout 是否具备可预测性。
+2. 建立跨目标参数对比表，统一比较 `horizon=20/30/40` 下 walk-forward Top20 的扣成本收益、止损率、timeout 率。
+3. 保留 `post_filter_metrics` 作为观察项，但暂不写死组合过滤规则。
 4. 增加特征组开关，做消融实验，优先验证父级别特征、本级别趋势波动特征、15M 子级别特征的真实贡献。
 5. 再做 RandomForest / XGBoost 参数对照。
 
 ## 当前优先级最高的下一步
 
-walk-forward 验证已在 `strategy_demo7.py` 中实现，输出字段为 `metrics["walk_forward_metrics"]`。
+walk-forward 边界修正、Top 分位汇总、固定阈值、退出原因和扣成本收益均已在 `strategy_demo7.py` 中实现。
 
-实现方式：
+当前主要输出：
 
-- 默认开启，可用 `--no-walk-forward` 关闭。
-- 默认测试月份取主测试集覆盖的月份。
-- 可用 `--walk-forward-test-periods 2026/03,2026/04` 显式指定测试月份。
-- 每个窗口使用 expanding window：用测试月份之前的所有样本训练，测试该月份。
-- 如果训练集或测试集样本不足，或只有一个类别，该窗口会记录为 `status = "skipped"` 并写入 `skip_reason`。
-- 每个有效窗口输出整体指标和 Top 5% / 10% / 20% / 30% 分层收益。
+- `metrics["walk_forward_metrics"]`
+- `metrics["walk_forward_top_bucket_summary"]`
+- `Debug/model_output/strategy_demo7/walk_forward_top_buckets.csv`
+- `metrics["post_filter_metrics"]`
+- `metrics["score_thresholds"]`
+- `metrics["test_exit_reason_summary"]`
 
-全量数据已经重新训练并解读 `walk_forward_metrics`。下一步应解释“命中率排序为何没有稳定转化为收益排序”。
+最新判断：
 
-固定分数阈值、Top 分层退出原因和扣成本收益已实现并完成全量重训解读。2026/04 高分止损样本已完成初步分析。下一步是做候选过滤规则回放，验证哪些规则能降低高分样本止损率并改善扣成本收益。
+- 固定高分阈值不稳定，不适合作为当前主要交易口径。
+- walk-forward Top20 比 Top5 / Top10 更稳，是当前最值得继续观察的候选池。
+- `horizon=30, take_profit=0.10, stop_loss=0.05` 下，收益很大一部分来自 timeout 样本，需要拆解 timeout 的收益质量。
+- 后处理组合规则样本数太少，暂时只做观察，不直接写死。
 
-理由：
+当前优先级最高的下一步：
 
-- walk-forward 已经确认模型有分类排序能力，但收益排序不稳定。
-- 固定阈值比 Top 百分比更接近实盘使用方式。
-- 退出原因统计可以判断高分样本的问题是止损太多、超时太多，还是止盈后的收益被亏损抵消。
-- 交易成本会直接决定当前弱收益分层是否还有实用价值。
+1. 新增 timeout 分析输出，按 Top 分位和 walk-forward 窗口统计 timeout 样本的平均收益、中位数收益、收益分位数、最大回撤。
+2. 对比 timeout 正收益、timeout 负收益、take_profit、stop_loss 四类样本的核心特征差异。
+3. 用统一 walk-forward Top 分位汇总对比 `horizon=20/30/40`，选择更稳定的目标定义。
 
-同时建议并行准备 2026/04 失效分析：
+同时建议继续保留以下观察项：
 
-- 高分样本所属股票分布。
-- 高分样本行业或板块分布。
-- 高分样本的 `parent_range`、`volatility_10`、`ret_10`、`volume_ratio_5` 分布。
-- Top5% / Top10% 中止损、止盈、超时退出的比例。
+- 高分样本所属股票、行业或板块分布。
+- `parent_range`、`volatility_10`、`ret_10`、`volume_ratio_5`、`entry_upper_shadow`、`child_close_pos` 的分布漂移。
 - 2026/04 是否存在分数校准漂移，即高分样本的实际正样本率明显低于 2026/03。
