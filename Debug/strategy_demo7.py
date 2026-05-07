@@ -3,10 +3,12 @@ import csv
 import hashlib
 import json
 import math
+import os
 import pickle
 import sqlite3
 import sys
 from bisect import bisect_left
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import pstdev
@@ -1394,6 +1396,8 @@ def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict
         "split_time": split_info["split_time"],
         "train_ratio": args.train_ratio,
         "trade_cost": args.trade_cost,
+        "signal_workers": args.signal_workers,
+        "effective_signal_workers": resolve_signal_workers(args.signal_workers, len(codes)),
         "score_thresholds": parse_float_list(args.score_thresholds),
         "post_filter_rules": list(POST_FILTER_RULES),
         "walk_forward": bool(args.walk_forward),
@@ -1416,6 +1420,89 @@ def ensure_two_classes(samples: List[SignalSample], name: str) -> None:
         raise ValueError(f"{name} 只有一个类别，无法训练/评估二分类模型：{classes}")
 
 
+def collect_labeled_buy_signals_for_code(
+    code: str,
+    begin_time: str,
+    end_time: Optional[str],
+    horizon: int,
+    take_profit: float,
+    stop_loss: float,
+) -> Tuple[str, List[SignalSample]]:
+    parent_dates, parent_context_by_date = build_parent_level_context(code, begin_time, end_time)
+    chan = build_chan(code, begin_time, end_time)
+    code_samples, final_klus = collect_buy_signals(chan, code, parent_dates, parent_context_by_date)
+    labeled_code_samples = label_samples(code_samples, final_klus, horizon, take_profit, stop_loss)
+    return code, labeled_code_samples
+
+
+def resolve_signal_workers(requested_workers: int, code_count: int) -> int:
+    if requested_workers < 0:
+        raise ValueError("--signal-workers 不能小于 0。")
+    if code_count <= 1:
+        return 1
+    if requested_workers > 0:
+        return min(requested_workers, code_count)
+    cpu_count = os.cpu_count() or 2
+    return max(1, min(cpu_count - 1, code_count, 6))
+
+
+def collect_labeled_buy_signals(
+    codes: List[str],
+    begin_time: str,
+    end_time: Optional[str],
+    horizon: int,
+    take_profit: float,
+    stop_loss: float,
+    signal_workers: int,
+) -> List[SignalSample]:
+    worker_count = resolve_signal_workers(signal_workers, len(codes))
+    samples_by_code: Dict[str, List[SignalSample]] = {}
+
+    if worker_count == 1:
+        for code in codes:
+            try:
+                _, labeled_code_samples = collect_labeled_buy_signals_for_code(
+                    code,
+                    begin_time,
+                    end_time,
+                    horizon,
+                    take_profit,
+                    stop_loss,
+                )
+                samples_by_code[code] = labeled_code_samples
+                print(f"{code}: 有效样本 {len(labeled_code_samples)}")
+            except Exception as err:
+                print(f"{code}: 加载或样本生成失败，已跳过：{err}")
+    else:
+        print(f"并行生成样本: workers={worker_count}, codes={len(codes)}")
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            future_to_code = {
+                executor.submit(
+                    collect_labeled_buy_signals_for_code,
+                    code,
+                    begin_time,
+                    end_time,
+                    horizon,
+                    take_profit,
+                    stop_loss,
+                ): code
+                for code in codes
+            }
+            for future in as_completed(future_to_code):
+                code = future_to_code[future]
+                try:
+                    _, labeled_code_samples = future.result()
+                    samples_by_code[code] = labeled_code_samples
+                    print(f"{code}: 有效样本 {len(labeled_code_samples)}")
+                except Exception as err:
+                    print(f"{code}: 加载或样本生成失败，已跳过：{err}")
+
+    samples: List[SignalSample] = []
+    for code in codes:
+        samples.extend(samples_by_code.get(code, []))
+    return samples
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="训练一个按未来收益打标签的30M买点质量模型。")
     parser.add_argument("--code", default="sz.000001")
@@ -1435,6 +1522,7 @@ def parse_args():
     parser.add_argument("--walk-forward-test-periods", default=None, help="逗号分隔的 walk-forward 测试月份，例如 2026/03,2026/04；默认使用主测试集覆盖的月份。")
     parser.add_argument("--walk-forward-min-train-samples", type=int, default=100, help="walk-forward 单个窗口最少训练样本数。")
     parser.add_argument("--walk-forward-min-test-samples", type=int, default=50, help="walk-forward 单个窗口最少测试样本数。")
+    parser.add_argument("--signal-workers", type=int, default=0, help="买点样本生成进程数；0 表示自动，1 表示串行。")
     parser.add_argument("--output-dir", default="Debug/model_output/strategy_demo7")
     return parser.parse_args()
 
@@ -1450,17 +1538,15 @@ if __name__ == "__main__":
         print(f"从缓存数据库读取股票数量: {len(codes)}")
     else:
         codes = parse_code_list(args.codes or args.code)
-    samples: List[SignalSample] = []
-    for code in codes:
-        try:
-            parent_dates, parent_context_by_date = build_parent_level_context(code, args.begin_time, args.end_time)
-            chan = build_chan(code, args.begin_time, args.end_time)
-            code_samples, final_klus = collect_buy_signals(chan, code, parent_dates, parent_context_by_date)
-            labeled_code_samples = label_samples(code_samples, final_klus, args.horizon, args.take_profit, args.stop_loss)
-            samples.extend(labeled_code_samples)
-            print(f"{code}: 有效样本 {len(labeled_code_samples)}")
-        except Exception as err:
-            print(f"{code}: 加载或样本生成失败，已跳过：{err}")
+    samples = collect_labeled_buy_signals(
+        codes,
+        args.begin_time,
+        args.end_time,
+        args.horizon,
+        args.take_profit,
+        args.stop_loss,
+        args.signal_workers,
+    )
 
     if not samples:
         raise ValueError("没有生成任何有效样本，请检查数据源连接、股票代码或时间范围。")
