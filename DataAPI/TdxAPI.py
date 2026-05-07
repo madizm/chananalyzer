@@ -22,7 +22,6 @@ class CTdxAPI(CCommonStockApi):
         period = self._convert_kl_type()
         stock_code = self._normalize_code(self.code)
 
-        # 通达信get market data 方法没有换手率
         field_list = ["open", "high", "low", "close", "volume", "amount"]
         data = tq.get_market_data(
             field_list=field_list,
@@ -47,6 +46,9 @@ class CTdxAPI(CCommonStockApi):
         volume_df = self._get_field_df(data, "volume")
         amount_df = self._get_field_df(data, "amount")
         turnover_rate_df = self._get_field_df(data, "turnover_rate")
+        active_capital = None
+        if turnover_rate_df is None:
+            active_capital = self._get_active_capital(stock_code)
 
         col = close_df.columns[0]
         for ts in close_df.index:
@@ -72,6 +74,10 @@ class CTdxAPI(CCommonStockApi):
 
             if turnover_rate_df is not None and col in turnover_rate_df.columns:
                 turnrate_v = self._safe_number(turnover_rate_df.at[ts, col])
+                if turnrate_v is not None:
+                    item[DATA_FIELD.FIELD_TURNRATE] = turnrate_v
+            else:
+                turnrate_v = self._calc_turnover_rate(volume_v, active_capital)
                 if turnrate_v is not None:
                     item[DATA_FIELD.FIELD_TURNRATE] = turnrate_v
 
@@ -107,6 +113,28 @@ class CTdxAPI(CCommonStockApi):
             return None
         return num
 
+    @classmethod
+    def _get_active_capital(cls, stock_code: str) -> Optional[float]:
+        try:
+            info = tq.get_stock_info(stock_code=stock_code, field_list=["ActiveCapital"])
+        except Exception:
+            return None
+        active_capital = cls._safe_number(info.get("ActiveCapital")) if info else None
+        if active_capital is None or active_capital <= 0:
+            return None
+        return active_capital
+
+    @staticmethod
+    def _calc_turnover_rate(
+        volume: Optional[float],
+        active_capital: Optional[float],
+    ) -> Optional[float]:
+        if volume is None or active_capital is None or active_capital <= 0:
+            return None
+        # TDX returns a ratio that needs scaling to match quote software's
+        # percentage-point turnover rate, e.g. 0.22 means 0.22%.
+        return volume / active_capital / 100
+
     @staticmethod
     def _normalize_code(code: str) -> str:
         if code is None:
@@ -115,6 +143,8 @@ class CTdxAPI(CCommonStockApi):
 
         if "." in code:
             left, right = code.split(".", 1)
+            if left.lower() in ("sh", "sz", "bj") and right.isdigit():
+                return f"{right.upper()}.{left.upper()}"
             return f"{left.upper()}.{right.upper()}"
 
         lower = code.lower()

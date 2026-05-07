@@ -72,6 +72,7 @@ def init_db():
         for sql in (
             "ALTER TABLE scan_runs ADD COLUMN ma_period INTEGER",
             "ALTER TABLE scan_results ADD COLUMN signal_time VARCHAR(30)",
+            "ALTER TABLE kline_data ADD COLUMN turnover_rate FLOAT",
         ):
             try:
                 cursor.execute(sql)
@@ -165,9 +166,9 @@ class KLineData(Base):
             high=float(klu.high),
             low=float(klu.low),
             close=float(klu.close),
-            volume=float(volume) if volume else 0,
-            amount=float(amount) if amount else None,
-            turnover_rate=float(turnover_rate) if turnover_rate else None,
+            volume=float(volume) if volume is not None else 0,
+            amount=float(amount) if amount is not None else None,
+            turnover_rate=float(turnover_rate) if turnover_rate is not None else None,
         )
 
 
