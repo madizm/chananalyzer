@@ -70,14 +70,40 @@ from Debug.strategy_demo7 import (
 )
 
 
-def target_bsp_type_hit(bsp) -> bool:
-    if bsp is None or not bsp.is_buy:
+def signal_side_is_buy(signal_side: str) -> bool:
+    return signal_side == "buy"
+
+
+def signal_side_bi_name(target_is_buy: bool) -> str:
+    return "下笔" if target_is_buy else "上笔"
+
+
+def signal_side_point_name(target_is_buy: bool) -> str:
+    return "买点" if target_is_buy else "卖点"
+
+
+def label_target_name(target_is_buy: bool) -> str:
+    return "confirmed_bi_is_target_buy_point" if target_is_buy else "confirmed_bi_is_target_sell_point"
+
+
+def label_definition_text(target_is_buy: bool) -> str:
+    bi_name = signal_side_bi_name(target_is_buy)
+    point_name = signal_side_point_name(target_is_buy)
+    return f"1 表示确认{bi_name}最终存在目标{point_name}(1/1p)，0 表示确认{bi_name}不是目标{point_name}。"
+
+
+def bi_matches_signal_side(bi, target_is_buy: bool) -> bool:
+    return bi.is_down() if target_is_buy else bi.is_up()
+
+
+def target_bsp_type_hit(bsp, target_is_buy: bool) -> bool:
+    if bsp is None or bool(bsp.is_buy) != target_is_buy:
         return False
     bsp_types = {bsp_type.strip() for bsp_type in str(bsp.type2str()).split(",") if bsp_type.strip()}
     return bool(bsp_types & TARGET_BSP_TYPES)
 
 
-def previous_bsp_context_feature(entry_klu, current_bi, previous_bsp) -> Dict[str, float]:
+def previous_bsp_context_feature(entry_klu, current_bi, previous_bsp, target_is_buy: bool) -> Dict[str, float]:
     feature = {
         "prev_bsp_exists": 0.0,
         "prev_bsp_is_buy": 0.0,
@@ -103,7 +129,7 @@ def previous_bsp_context_feature(entry_klu, current_bi, previous_bsp) -> Dict[st
     feature.update({
         "prev_bsp_exists": 1.0,
         "prev_bsp_is_buy": float(bool(previous_bsp.is_buy)),
-        "prev_bsp_same_direction": float(previous_bsp.is_buy == current_bi.is_down()),
+        "prev_bsp_same_direction": float(bool(previous_bsp.is_buy) == target_is_buy),
         "prev_bsp_bi_gap": float(current_bi.idx - previous_bsp.bi.idx),
         "prev_bsp_klu_gap": float(entry_klu.idx - previous_bsp.klu.idx),
         "prev_bsp_price_change": safe_div(float(entry_klu.close) - prev_price, prev_price),
@@ -131,7 +157,7 @@ def candidate_divergence_feature(bi) -> Dict[str, float]:
         "candidate_divergence_rate": 0.0,
         "candidate_in_metric_peak": 0.0,
         "candidate_out_metric_peak": 0.0,
-        "candidate_break_prev_low": 0.0,
+        "candidate_break_prev_extreme": 0.0,
         "candidate_prev_same_dir_amp": 0.0,
     }
     if bi.idx < 2 or bi.pre is None or bi.pre.pre is None:
@@ -152,7 +178,7 @@ def candidate_divergence_feature(bi) -> Dict[str, float]:
         "candidate_divergence_rate": safe_div(out_metric, in_metric + 1e-7),
         "candidate_in_metric_peak": in_metric,
         "candidate_out_metric_peak": out_metric,
-        "candidate_break_prev_low": float(bool(bi._low() <= pre_same_dir_bi._low())) if bi.is_down() else float(bool(bi._high() >= pre_same_dir_bi._high())),
+        "candidate_break_prev_extreme": float(bool(bi._low() <= pre_same_dir_bi._low())) if bi.is_down() else float(bool(bi._high() >= pre_same_dir_bi._high())),
         "candidate_prev_same_dir_amp": float(pre_same_dir_bi.amp()),
     })
     return feature
@@ -162,6 +188,7 @@ def confirmed_bi_feature(
     klus: List,
     pos: int,
     bi,
+    target_is_buy: bool,
     previous_bsp=None,
     parent_context=None,
     child_level_chan=None,
@@ -191,7 +218,7 @@ def confirmed_bi_feature(
         "bi_idx": float(bi.idx),
     }
 
-    feature.update(previous_bsp_context_feature(klu, bi, previous_bsp))
+    feature.update(previous_bsp_context_feature(klu, bi, previous_bsp, target_is_buy))
     feature.update(candidate_divergence_feature(bi))
     feature.update(bi_bar_feature(klus, bi))
     feature.update(parent_level_feature(klu, parent_context))
@@ -213,6 +240,7 @@ def collect_confirmed_bi_samples_for_code(
     code: str,
     begin_time: str,
     end_time: Optional[str],
+    target_is_buy: bool,
 ) -> Tuple[str, List[SignalSample]]:
     parent_dates, parent_context_by_date = build_parent_level_context(code, begin_time, end_time)
     chan = build_chan(code, begin_time, end_time)
@@ -227,14 +255,14 @@ def collect_confirmed_bi_samples_for_code(
     target_bsp_by_bi_idx = {
         int(bsp.bi.idx): bsp
         for bsp in sorted_bsp_list
-        if target_bsp_type_hit(bsp) and bool(bsp.bi.is_sure)
+        if target_bsp_type_hit(bsp, target_is_buy) and bool(bsp.bi.is_sure)
     }
 
     samples: List[SignalSample] = []
     for bi in level_chan.bi_list:
         if not bi.is_sure:
             continue
-        if not bi.is_down():
+        if not bi_matches_signal_side(bi, target_is_buy):
             continue
 
         entry_klu = bi.get_end_klu()
@@ -257,13 +285,15 @@ def collect_confirmed_bi_samples_for_code(
                 final_klus,
                 pos,
                 bi,
+                target_is_buy,
                 previous_bsp,
                 parent_context,
                 child_level_chan,
             ),
             label=1 if bsp is not None else 0,
         )
-        sample.exit_reason = "correct_bsp" if sample.label == 1 else "not_bsp"
+        point_name = "buy_point" if target_is_buy else "sell_point"
+        sample.exit_reason = f"correct_{point_name}" if sample.label == 1 else f"not_{point_name}"
         samples.append(sample)
 
     return code, samples
@@ -285,23 +315,25 @@ def collect_confirmed_bi_samples(
     begin_time: str,
     end_time: Optional[str],
     signal_workers: int,
+    target_is_buy: bool,
 ) -> List[SignalSample]:
     worker_count = resolve_signal_workers(signal_workers, len(codes))
     samples_by_code: Dict[str, List[SignalSample]] = {}
+    bi_name = signal_side_bi_name(target_is_buy)
 
     if worker_count == 1:
         for code in codes:
             try:
-                _, code_samples = collect_confirmed_bi_samples_for_code(code, begin_time, end_time)
+                _, code_samples = collect_confirmed_bi_samples_for_code(code, begin_time, end_time, target_is_buy)
                 samples_by_code[code] = code_samples
-                print(f"{code}: 确认下笔样本 {len(code_samples)}")
+                print(f"{code}: 确认{bi_name}样本 {len(code_samples)}")
             except Exception as err:
                 print(f"{code}: 加载或样本生成失败，已跳过：{err}")
     else:
         print(f"并行生成确认笔样本: workers={worker_count}, codes={len(codes)}")
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
             future_to_code = {
-                executor.submit(collect_confirmed_bi_samples_for_code, code, begin_time, end_time): code
+                executor.submit(collect_confirmed_bi_samples_for_code, code, begin_time, end_time, target_is_buy): code
                 for code in codes
             }
             for future in as_completed(future_to_code):
@@ -309,7 +341,7 @@ def collect_confirmed_bi_samples(
                 try:
                     _, code_samples = future.result()
                     samples_by_code[code] = code_samples
-                    print(f"{code}: 确认下笔样本 {len(code_samples)}")
+                    print(f"{code}: 确认{bi_name}样本 {len(code_samples)}")
                 except Exception as err:
                     print(f"{code}: 加载或样本生成失败，已跳过：{err}")
 
@@ -408,6 +440,7 @@ def train_correctness_model(
     feature_meta: Dict[str, int],
     random_state: int,
     score_thresholds: List[float],
+    target_is_buy: bool,
 ):
     x_train = build_matrix(train_samples, feature_meta)
     y_train = [int(sample.label) for sample in train_samples]
@@ -445,7 +478,7 @@ def train_correctness_model(
         "score_buckets": score_buckets,
         "score_thresholds": summarize_score_thresholds(test_prob, test_samples, score_thresholds),
         "time_period_metrics": summarize_time_period_metrics(test_prob, test_samples),
-        "label_definition": "1 表示确认下笔最终存在目标买点(1/1p)，0 表示确认下笔不是目标买点。",
+        "label_definition": label_definition_text(target_is_buy),
     }
     return model, metrics, test_prob
 
@@ -457,6 +490,7 @@ def run_walk_forward_validation(
     min_train_samples: int,
     min_test_samples: int,
     score_thresholds: List[float],
+    target_is_buy: bool,
     min_test_time: Optional[str] = None,
 ) -> List[Dict]:
     sorted_samples = sorted(samples, key=lambda sample: (sample.open_time, sample.code, sample.open_klu_idx))
@@ -507,6 +541,7 @@ def run_walk_forward_validation(
             feature_meta,
             random_state,
             score_thresholds,
+            target_is_buy,
         )
         window_metrics.pop("time_period_metrics", None)
         row.update(window_metrics)
@@ -555,10 +590,13 @@ def ensure_two_classes(samples: List[SignalSample], name: str) -> None:
 def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict:
     model_params = dict(MODEL_PARAMS)
     model_params["random_state"] = args.random_state
+    target_is_buy = signal_side_is_buy(args.signal_side)
     return {
         "begin_time": args.begin_time,
         "end_time": args.end_time,
-        "label_target": "confirmed_bi_is_target_buy_point",
+        "signal_side": args.signal_side,
+        "label_target": label_target_name(target_is_buy),
+        "label_definition": label_definition_text(target_is_buy),
         "target_bsp_types": sorted(TARGET_BSP_TYPES),
         "main_bs_type": "1,1p",
         "data_src": "CACHE_DB",
@@ -586,10 +624,11 @@ def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="训练一个识别确认下笔是否为目标买点的30M结构模型。")
+    parser = argparse.ArgumentParser(description="训练一个识别确认笔是否为目标买/卖点的30M结构模型。")
     parser.add_argument("--code", default="sz.000001")
     parser.add_argument("--codes", default=None, help="逗号分隔的股票列表；传入后会覆盖 --code。")
     parser.add_argument("--all", action="store_true", help="从缓存数据库读取所有有30M数据的股票。")
+    parser.add_argument("--signal-side", choices=["buy", "sell"], default="buy", help="训练买点还是卖点识别。buy 使用确认下笔，sell 使用确认上笔。")
     parser.add_argument("--split-time", default=None, help="测试集起始时间，例如 2026-03-01 或 2026/03/01 10:00。")
     parser.add_argument("--begin-time", default="2015-01-01")
     parser.add_argument("--end-time", default=None)
@@ -601,13 +640,16 @@ def parse_args():
     parser.add_argument("--walk-forward-min-train-samples", type=int, default=100)
     parser.add_argument("--walk-forward-min-test-samples", type=int, default=50)
     parser.add_argument("--signal-workers", type=int, default=0)
-    parser.add_argument("--output-dir", default="Debug/model_output/strategy_demo8")
+    parser.add_argument("--output-dir", default=None)
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    output_dir = Path(args.output_dir)
+    target_is_buy = signal_side_is_buy(args.signal_side)
+    default_output_dir = "Debug/model_output/strategy_demo8" if target_is_buy else "Debug/model_output/strategy_demo8_sell"
+    output_dir = Path(args.output_dir or default_output_dir)
+    bi_name = signal_side_bi_name(target_is_buy)
 
     if args.all:
         codes = get_stock_list_from_cache(DB_KL_TYPE)
@@ -617,11 +659,11 @@ if __name__ == "__main__":
     else:
         codes = parse_code_list(args.codes or args.code)
 
-    samples = collect_confirmed_bi_samples(codes, args.begin_time, args.end_time, args.signal_workers)
+    samples = collect_confirmed_bi_samples(codes, args.begin_time, args.end_time, args.signal_workers, target_is_buy)
     if not samples:
-        raise ValueError("没有生成任何确认下笔样本，请检查数据源连接、股票代码或时间范围。")
+        raise ValueError(f"没有生成任何确认{bi_name}样本，请检查数据源连接、股票代码或时间范围。")
     if len(samples) < 20:
-        raise ValueError(f"确认下笔样本太少：{len(samples)}，请扩大时间范围。")
+        raise ValueError(f"确认{bi_name}样本太少：{len(samples)}，请扩大时间范围。")
 
     train_samples, test_samples, split_info = split_by_time(samples, args.train_ratio, args.split_time)
     ensure_two_classes(train_samples, "训练集")
@@ -635,6 +677,7 @@ if __name__ == "__main__":
         feature_meta,
         args.random_state,
         score_thresholds,
+        target_is_buy,
     )
     metrics.update({
         "kl_type": DB_KL_TYPE,
@@ -659,6 +702,7 @@ if __name__ == "__main__":
             args.walk_forward_min_train_samples,
             args.walk_forward_min_test_samples,
             score_thresholds,
+            target_is_buy,
             split_info["split_time"],
         )
 
