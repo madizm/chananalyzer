@@ -1,0 +1,685 @@
+import argparse
+import csv
+import json
+import math
+import os
+import pickle
+import sys
+from bisect import bisect_left
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+from sklearn.pipeline import Pipeline
+
+from Common.CEnum import DATA_FIELD, MACD_ALGO
+from Debug.strategy_demo7 import (
+    CHILD_LV_IDX,
+    DB_KL_TYPE,
+    MODEL_LV_IDX,
+    MODEL_PARAMS,
+    PARENT_BSP_TYPES,
+    PARENT_DB_KL_TYPE,
+    CHILD_DB_KL_TYPE,
+    TARGET_BSP_TYPES,
+    SignalSample,
+    avg_optional,
+    bi_bar_feature,
+    build_chan,
+    build_feature_meta,
+    build_matrix,
+    build_parent_level_context,
+    child_level_feature,
+    codes_digest,
+    ctime_to_date_str,
+    ctime_to_str,
+    get_feature_importance,
+    get_stock_list_from_cache,
+    mean,
+    metric_or_none,
+    moving_average_dist,
+    normalize_period,
+    normalize_split_time,
+    parent_level_feature,
+    parse_code_list,
+    parse_period_list,
+    period_end_time_exclusive,
+    recent_return,
+    ratio_to_recent_avg,
+    safe_div,
+    sample_period,
+    split_by_time,
+    trade_metric,
+    volatility,
+    walk_forward_period_start,
+    write_feature_importance,
+    write_libsvm,
+)
+
+
+def target_bsp_type_hit(bsp) -> bool:
+    if bsp is None or not bsp.is_buy:
+        return False
+    bsp_types = {bsp_type.strip() for bsp_type in str(bsp.type2str()).split(",") if bsp_type.strip()}
+    return bool(bsp_types & TARGET_BSP_TYPES)
+
+
+def previous_bsp_context_feature(entry_klu, current_bi, previous_bsp) -> Dict[str, float]:
+    feature = {
+        "prev_bsp_exists": 0.0,
+        "prev_bsp_is_buy": 0.0,
+        "prev_bsp_same_direction": 0.0,
+        "prev_bsp_type_1": 0.0,
+        "prev_bsp_type_1p": 0.0,
+        "prev_bsp_type_2": 0.0,
+        "prev_bsp_type_2s": 0.0,
+        "prev_bsp_type_3a": 0.0,
+        "prev_bsp_type_3b": 0.0,
+        "prev_bsp_bi_gap": 0.0,
+        "prev_bsp_klu_gap": 0.0,
+        "prev_bsp_price_change": 0.0,
+        "entry_vs_prev_bsp_price": 0.0,
+        "prev_bsp_bi_amp": 0.0,
+        "prev_bsp_bi_is_sure": 0.0,
+        "prev_bsp_divergence_rate": 0.0,
+    }
+    if previous_bsp is None:
+        return feature
+
+    prev_price = float(previous_bsp.klu.close)
+    feature.update({
+        "prev_bsp_exists": 1.0,
+        "prev_bsp_is_buy": float(bool(previous_bsp.is_buy)),
+        "prev_bsp_same_direction": float(previous_bsp.is_buy == current_bi.is_down()),
+        "prev_bsp_bi_gap": float(current_bi.idx - previous_bsp.bi.idx),
+        "prev_bsp_klu_gap": float(entry_klu.idx - previous_bsp.klu.idx),
+        "prev_bsp_price_change": safe_div(float(entry_klu.close) - prev_price, prev_price),
+        "entry_vs_prev_bsp_price": safe_div(float(entry_klu.close) - prev_price, prev_price),
+        "prev_bsp_bi_amp": float(previous_bsp.bi.amp()),
+        "prev_bsp_bi_is_sure": float(bool(previous_bsp.bi.is_sure)),
+    })
+    for bsp_type in str(previous_bsp.type2str()).split(","):
+        bsp_type = bsp_type.strip()
+        if bsp_type:
+            feature[f"prev_bsp_type_{bsp_type}"] = 1.0
+    for feature_name, value in previous_bsp.features.items():
+        if feature_name != "divergence_rate" or value is None:
+            continue
+        try:
+            feature["prev_bsp_divergence_rate"] = float(value)
+        except (TypeError, ValueError):
+            pass
+    return feature
+
+
+def candidate_divergence_feature(bi) -> Dict[str, float]:
+    feature = {
+        "candidate_divergence_exists": 0.0,
+        "candidate_divergence_rate": 0.0,
+        "candidate_in_metric_peak": 0.0,
+        "candidate_out_metric_peak": 0.0,
+        "candidate_break_prev_low": 0.0,
+        "candidate_prev_same_dir_amp": 0.0,
+    }
+    if bi.idx < 2 or bi.pre is None or bi.pre.pre is None:
+        return feature
+
+    pre_same_dir_bi = bi.pre.pre
+    if pre_same_dir_bi.is_down() != bi.is_down():
+        return feature
+
+    try:
+        in_metric = float(pre_same_dir_bi.cal_macd_metric(MACD_ALGO.PEAK, is_reverse=False))
+        out_metric = float(bi.cal_macd_metric(MACD_ALGO.PEAK, is_reverse=True))
+    except Exception:
+        return feature
+
+    feature.update({
+        "candidate_divergence_exists": 1.0,
+        "candidate_divergence_rate": safe_div(out_metric, in_metric + 1e-7),
+        "candidate_in_metric_peak": in_metric,
+        "candidate_out_metric_peak": out_metric,
+        "candidate_break_prev_low": float(bool(bi._low() <= pre_same_dir_bi._low())) if bi.is_down() else float(bool(bi._high() >= pre_same_dir_bi._high())),
+        "candidate_prev_same_dir_amp": float(pre_same_dir_bi.amp()),
+    })
+    return feature
+
+
+def confirmed_bi_feature(
+    klus: List,
+    pos: int,
+    bi,
+    previous_bsp=None,
+    parent_context=None,
+    child_level_chan=None,
+) -> Dict[str, float]:
+    klu = klus[pos]
+    high_low_range = float(klu.high) - float(klu.low)
+    body_high = max(float(klu.open), float(klu.close))
+    body_low = min(float(klu.open), float(klu.close))
+
+    feature = {
+        "entry_kline_return": safe_div(float(klu.close) - float(klu.open), float(klu.open)),
+        "entry_close_pos": safe_div(float(klu.close) - float(klu.low), high_low_range, 0.5),
+        "entry_upper_shadow": safe_div(float(klu.high) - body_high, high_low_range),
+        "entry_lower_shadow": safe_div(body_low - float(klu.low), high_low_range),
+        "ret_3": recent_return(klus, pos, 3),
+        "ret_5": recent_return(klus, pos, 5),
+        "ret_10": recent_return(klus, pos, 10),
+        "ma_dist_5": moving_average_dist(klus, pos, 5),
+        "ma_dist_10": moving_average_dist(klus, pos, 10),
+        "ma_dist_20": moving_average_dist(klus, pos, 20),
+        "volatility_10": volatility(klus, pos, 10),
+        "volume_ratio_5": ratio_to_recent_avg(klus, pos, DATA_FIELD.FIELD_VOLUME, 5),
+        "turnover_ratio_5": ratio_to_recent_avg(klus, pos, DATA_FIELD.FIELD_TURNOVER, 5),
+        "turnrate_ratio_5": ratio_to_recent_avg(klus, pos, DATA_FIELD.FIELD_TURNRATE, 5),
+        "bi_amp": float(bi.amp()),
+        "bi_is_sure": float(bool(bi.is_sure)),
+        "bi_idx": float(bi.idx),
+    }
+
+    feature.update(previous_bsp_context_feature(klu, bi, previous_bsp))
+    feature.update(candidate_divergence_feature(bi))
+    feature.update(bi_bar_feature(klus, bi))
+    feature.update(parent_level_feature(klu, parent_context))
+    if child_level_chan is not None:
+        feature.update(child_level_feature(klu, klu.klc, child_level_chan))
+    return feature
+
+
+def latest_previous_bsp(sorted_bsp_list: List, bi_idx: int):
+    previous_bsp = None
+    for bsp in sorted_bsp_list:
+        if bsp.bi.idx >= bi_idx:
+            break
+        previous_bsp = bsp
+    return previous_bsp
+
+
+def collect_confirmed_bi_samples_for_code(
+    code: str,
+    begin_time: str,
+    end_time: Optional[str],
+) -> Tuple[str, List[SignalSample]]:
+    parent_dates, parent_context_by_date = build_parent_level_context(code, begin_time, end_time)
+    chan = build_chan(code, begin_time, end_time)
+    for _ in chan.step_load():
+        pass
+
+    level_chan = chan[MODEL_LV_IDX]
+    child_level_chan = chan[CHILD_LV_IDX]
+    final_klus = list(level_chan.klu_iter())
+    pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
+    sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
+    target_bsp_by_bi_idx = {
+        int(bsp.bi.idx): bsp
+        for bsp in sorted_bsp_list
+        if target_bsp_type_hit(bsp) and bool(bsp.bi.is_sure)
+    }
+
+    samples: List[SignalSample] = []
+    for bi in level_chan.bi_list:
+        if not bi.is_sure:
+            continue
+        if not bi.is_down():
+            continue
+
+        entry_klu = bi.get_end_klu()
+        pos = pos_by_idx.get(int(entry_klu.idx))
+        if pos is None:
+            continue
+        bsp = target_bsp_by_bi_idx.get(int(bi.idx))
+        previous_bsp = latest_previous_bsp(sorted_bsp_list, bi.idx)
+        entry_date = ctime_to_date_str(entry_klu.time)
+        parent_pos = bisect_left(parent_dates, entry_date) - 1
+        parent_context = parent_context_by_date[parent_dates[parent_pos]] if parent_pos >= 0 else None
+
+        sample = SignalSample(
+            code=code,
+            bsp_klu_idx=int(bsp.klu.idx) if bsp is not None else int(entry_klu.idx),
+            open_klu_idx=int(entry_klu.idx),
+            open_time=ctime_to_str(entry_klu.time),
+            entry_price=float(entry_klu.close),
+            feature=confirmed_bi_feature(
+                final_klus,
+                pos,
+                bi,
+                previous_bsp,
+                parent_context,
+                child_level_chan,
+            ),
+            label=1 if bsp is not None else 0,
+        )
+        sample.exit_reason = "correct_bsp" if sample.label == 1 else "not_bsp"
+        samples.append(sample)
+
+    return code, samples
+
+
+def resolve_signal_workers(requested_workers: int, code_count: int) -> int:
+    if requested_workers < 0:
+        raise ValueError("--signal-workers 不能小于 0。")
+    if code_count <= 1:
+        return 1
+    if requested_workers > 0:
+        return min(requested_workers, code_count)
+    cpu_count = os.cpu_count() or 2
+    return max(1, min(cpu_count - 1, code_count, 6))
+
+
+def collect_confirmed_bi_samples(
+    codes: List[str],
+    begin_time: str,
+    end_time: Optional[str],
+    signal_workers: int,
+) -> List[SignalSample]:
+    worker_count = resolve_signal_workers(signal_workers, len(codes))
+    samples_by_code: Dict[str, List[SignalSample]] = {}
+
+    if worker_count == 1:
+        for code in codes:
+            try:
+                _, code_samples = collect_confirmed_bi_samples_for_code(code, begin_time, end_time)
+                samples_by_code[code] = code_samples
+                print(f"{code}: 确认下笔样本 {len(code_samples)}")
+            except Exception as err:
+                print(f"{code}: 加载或样本生成失败，已跳过：{err}")
+    else:
+        print(f"并行生成确认笔样本: workers={worker_count}, codes={len(codes)}")
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            future_to_code = {
+                executor.submit(collect_confirmed_bi_samples_for_code, code, begin_time, end_time): code
+                for code in codes
+            }
+            for future in as_completed(future_to_code):
+                code = future_to_code[future]
+                try:
+                    _, code_samples = future.result()
+                    samples_by_code[code] = code_samples
+                    print(f"{code}: 确认下笔样本 {len(code_samples)}")
+                except Exception as err:
+                    print(f"{code}: 加载或样本生成失败，已跳过：{err}")
+
+    samples: List[SignalSample] = []
+    for code in codes:
+        samples.extend(samples_by_code.get(code, []))
+    return samples
+
+
+def correctness_summary(samples: List[SignalSample]) -> Dict:
+    total = len(samples)
+    correct_count = sum(int(sample.label) for sample in samples)
+    return {
+        "correct_bsp_count": correct_count,
+        "not_bsp_count": total - correct_count,
+        "correct_bsp_rate": safe_div(float(correct_count), float(total)),
+    }
+
+
+def summarize_scored_correctness(scores: List[float], samples: List[SignalSample]) -> Dict:
+    sample_count = len(samples)
+    if sample_count == 0:
+        return {
+            "sample_count": 0,
+            "min_score": None,
+            "avg_score": None,
+            "hit_rate": None,
+            **correctness_summary([]),
+        }
+    return {
+        "sample_count": sample_count,
+        "min_score": min(scores),
+        "avg_score": sum(scores) / sample_count,
+        "hit_rate": sum(int(sample.label) for sample in samples) / sample_count,
+        **correctness_summary(samples),
+    }
+
+
+def summarize_score_buckets(test_prob, test_samples: List[SignalSample], buckets=(0.05, 0.10, 0.20, 0.30)) -> List[Dict]:
+    ranked_samples = sorted(zip(test_prob, test_samples), key=lambda item: item[0], reverse=True)
+    rows = []
+    for bucket in buckets:
+        top_n = max(1, int(len(ranked_samples) * bucket))
+        top_items = ranked_samples[:top_n]
+        rows.append({
+            "top_pct": bucket,
+            **summarize_scored_correctness(
+                [float(score) for score, _ in top_items],
+                [sample for _, sample in top_items],
+            ),
+        })
+    return rows
+
+
+def summarize_score_thresholds(test_prob, test_samples: List[SignalSample], thresholds: List[float]) -> List[Dict]:
+    scored_samples = [(float(score), sample) for score, sample in zip(test_prob, test_samples)]
+    rows = []
+    for threshold in thresholds:
+        items = [(score, sample) for score, sample in scored_samples if score >= threshold]
+        rows.append({
+            "threshold": threshold,
+            **summarize_scored_correctness(
+                [score for score, _ in items],
+                [sample for _, sample in items],
+            ),
+        })
+    return rows
+
+
+def summarize_time_period_metrics(test_prob, test_samples: List[SignalSample]) -> List[Dict]:
+    period_items: Dict[str, List[Tuple[float, SignalSample]]] = {}
+    for score, sample in zip(test_prob, test_samples):
+        period_items.setdefault(sample_period(sample), []).append((float(score), sample))
+
+    rows = []
+    for period in sorted(period_items):
+        items = period_items[period]
+        scores = [score for score, _ in items]
+        samples = [sample for _, sample in items]
+        y_true = [int(sample.label) for sample in samples]
+        score_buckets = summarize_score_buckets(scores, samples, buckets=(0.05, 0.10, 0.20))
+        rows.append({
+            "period": period,
+            "sample_count": len(samples),
+            "positive_rate": sum(y_true) / len(y_true),
+            "auc": metric_or_none(roc_auc_score, y_true, scores) if len(set(y_true)) == 2 else None,
+            "average_precision": metric_or_none(average_precision_score, y_true, scores) if len(set(y_true)) == 2 else None,
+            "score_buckets": score_buckets,
+        })
+    return rows
+
+
+def train_correctness_model(
+    train_samples: List[SignalSample],
+    test_samples: List[SignalSample],
+    feature_meta: Dict[str, int],
+    random_state: int,
+    score_thresholds: List[float],
+):
+    x_train = build_matrix(train_samples, feature_meta)
+    y_train = [int(sample.label) for sample in train_samples]
+    x_test = build_matrix(test_samples, feature_meta)
+    y_test = [int(sample.label) for sample in test_samples]
+
+    model = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("clf", RandomForestClassifier(
+            n_estimators=MODEL_PARAMS["n_estimators"],
+            max_depth=MODEL_PARAMS["max_depth"],
+            min_samples_leaf=MODEL_PARAMS["min_samples_leaf"],
+            class_weight=MODEL_PARAMS["class_weight"],
+            random_state=random_state,
+        )),
+    ])
+    model.fit(x_train, y_train)
+
+    test_prob = model.predict_proba(x_test)[:, 1]
+    test_pred = [int(prob >= 0.5) for prob in test_prob]
+    score_buckets = summarize_score_buckets(test_prob, test_samples)
+    top20_bucket = next(row for row in score_buckets if row["top_pct"] == 0.20)
+    metrics = {
+        "train_samples": len(train_samples),
+        "test_samples": len(test_samples),
+        "feature_count": len(feature_meta),
+        "train_positive_rate": sum(y_train) / len(y_train),
+        "test_positive_rate": sum(y_test) / len(y_test),
+        "test_auc": metric_or_none(roc_auc_score, y_test, test_prob),
+        "test_average_precision": metric_or_none(average_precision_score, y_test, test_prob),
+        "test_accuracy_at_0_5": float(accuracy_score(y_test, test_pred)),
+        "test_precision_at_0_5": float(precision_score(y_test, test_pred, zero_division=0)),
+        "test_recall_at_0_5": float(recall_score(y_test, test_pred, zero_division=0)),
+        "test_top20pct_hit_rate": top20_bucket["hit_rate"],
+        "score_buckets": score_buckets,
+        "score_thresholds": summarize_score_thresholds(test_prob, test_samples, score_thresholds),
+        "time_period_metrics": summarize_time_period_metrics(test_prob, test_samples),
+        "label_definition": "1 表示确认下笔最终存在目标买点(1/1p)，0 表示确认下笔不是目标买点。",
+    }
+    return model, metrics, test_prob
+
+
+def run_walk_forward_validation(
+    samples: List[SignalSample],
+    test_periods: List[str],
+    random_state: int,
+    min_train_samples: int,
+    min_test_samples: int,
+    score_thresholds: List[float],
+    min_test_time: Optional[str] = None,
+) -> List[Dict]:
+    sorted_samples = sorted(samples, key=lambda sample: (sample.open_time, sample.code, sample.open_klu_idx))
+    rows = []
+    for period in sorted(dict.fromkeys(test_periods)):
+        period = normalize_period(period)
+        test_start_time = walk_forward_period_start(period, min_test_time)
+        test_end_time = period_end_time_exclusive(period)
+        train_samples = [sample for sample in sorted_samples if sample.open_time < test_start_time]
+        test_samples = [sample for sample in sorted_samples if test_start_time <= sample.open_time < test_end_time]
+        row = {
+            "mode": "expanding_window",
+            "test_period": period,
+            "test_start_time": test_start_time,
+            "test_end_time_exclusive": test_end_time,
+            "train_period": f"{train_samples[0].open_time} ~ {train_samples[-1].open_time}" if train_samples else "",
+            "test_time_range": f"{test_samples[0].open_time} ~ {test_samples[-1].open_time}" if test_samples else "",
+            "train_samples": len(train_samples),
+            "test_samples": len(test_samples),
+            "train_code_count": len({sample.code for sample in train_samples}),
+            "test_code_count": len({sample.code for sample in test_samples}),
+        }
+        if len(train_samples) < min_train_samples:
+            row["status"] = "skipped"
+            row["skip_reason"] = f"训练样本不足：{len(train_samples)} < {min_train_samples}"
+            rows.append(row)
+            continue
+        if len(test_samples) < min_test_samples:
+            row["status"] = "skipped"
+            row["skip_reason"] = f"测试样本不足：{len(test_samples)} < {min_test_samples}"
+            rows.append(row)
+            continue
+        if len({sample.label for sample in train_samples}) < 2:
+            row["status"] = "skipped"
+            row["skip_reason"] = "训练集只有一个类别"
+            rows.append(row)
+            continue
+        if len({sample.label for sample in test_samples}) < 2:
+            row["status"] = "skipped"
+            row["skip_reason"] = "测试集只有一个类别"
+            rows.append(row)
+            continue
+
+        feature_meta = build_feature_meta(train_samples)
+        _, window_metrics, _ = train_correctness_model(
+            train_samples,
+            test_samples,
+            feature_meta,
+            random_state,
+            score_thresholds,
+        )
+        window_metrics.pop("time_period_metrics", None)
+        row.update(window_metrics)
+        row["status"] = "ok"
+        row["feature_count"] = len(feature_meta)
+        rows.append(row)
+    return rows
+
+
+def write_samples_csv(path: Path, samples: List[SignalSample], score_by_key: Optional[Dict[Tuple[str, int], float]] = None) -> None:
+    score_by_key = score_by_key or {}
+    with path.open("w", newline="", encoding="utf-8") as fid:
+        writer = csv.DictWriter(
+            fid,
+            fieldnames=[
+                "open_time",
+                "code",
+                "open_klu_idx",
+                "bsp_klu_idx",
+                "entry_price",
+                "label",
+                "score",
+                "exit_reason",
+            ],
+        )
+        writer.writeheader()
+        for sample in samples:
+            writer.writerow({
+                "open_time": sample.open_time,
+                "code": sample.code,
+                "open_klu_idx": sample.open_klu_idx,
+                "bsp_klu_idx": sample.bsp_klu_idx,
+                "entry_price": sample.entry_price,
+                "label": sample.label,
+                "score": score_by_key.get((sample.code, sample.open_klu_idx)),
+                "exit_reason": sample.exit_reason,
+            })
+
+
+def ensure_two_classes(samples: List[SignalSample], name: str) -> None:
+    classes = {sample.label for sample in samples}
+    if len(classes) < 2:
+        raise ValueError(f"{name} 只有一个类别，无法训练/评估二分类模型：{classes}")
+
+
+def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict:
+    model_params = dict(MODEL_PARAMS)
+    model_params["random_state"] = args.random_state
+    return {
+        "begin_time": args.begin_time,
+        "end_time": args.end_time,
+        "label_target": "confirmed_bi_is_target_buy_point",
+        "target_bsp_types": sorted(TARGET_BSP_TYPES),
+        "main_bs_type": "1,1p",
+        "data_src": "CACHE_DB",
+        "model_kl_type": DB_KL_TYPE,
+        "parent_kl_type": PARENT_DB_KL_TYPE,
+        "child_kl_type": CHILD_DB_KL_TYPE,
+        "split_mode": split_info["mode"],
+        "split_time": split_info["split_time"],
+        "train_ratio": args.train_ratio,
+        "score_thresholds": [float(value) for value in args.score_thresholds.split(",") if value.strip()],
+        "walk_forward": bool(args.walk_forward),
+        "walk_forward_test_periods": parse_period_list(args.walk_forward_test_periods),
+        "walk_forward_min_test_time": split_info["split_time"],
+        "walk_forward_min_train_samples": args.walk_forward_min_train_samples,
+        "walk_forward_min_test_samples": args.walk_forward_min_test_samples,
+        "all_codes": bool(args.all),
+        "requested_code": args.code,
+        "requested_codes": args.codes,
+        "code_count": len(codes),
+        "codes_sha256": codes_digest(codes),
+        "signal_workers": args.signal_workers,
+        "effective_signal_workers": resolve_signal_workers(args.signal_workers, len(codes)),
+        "model": model_params,
+    }
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="训练一个识别确认下笔是否为目标买点的30M结构模型。")
+    parser.add_argument("--code", default="sz.000001")
+    parser.add_argument("--codes", default=None, help="逗号分隔的股票列表；传入后会覆盖 --code。")
+    parser.add_argument("--all", action="store_true", help="从缓存数据库读取所有有30M数据的股票。")
+    parser.add_argument("--split-time", default=None, help="测试集起始时间，例如 2026-03-01 或 2026/03/01 10:00。")
+    parser.add_argument("--begin-time", default="2015-01-01")
+    parser.add_argument("--end-time", default=None)
+    parser.add_argument("--train-ratio", type=float, default=0.7)
+    parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--score-thresholds", default="0.55,0.60,0.65")
+    parser.add_argument("--walk-forward", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--walk-forward-test-periods", default=None)
+    parser.add_argument("--walk-forward-min-train-samples", type=int, default=100)
+    parser.add_argument("--walk-forward-min-test-samples", type=int, default=50)
+    parser.add_argument("--signal-workers", type=int, default=0)
+    parser.add_argument("--output-dir", default="Debug/model_output/strategy_demo8")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    output_dir = Path(args.output_dir)
+
+    if args.all:
+        codes = get_stock_list_from_cache(DB_KL_TYPE)
+        if not codes:
+            raise ValueError("缓存数据库中没有找到30M股票数据。")
+        print(f"从缓存数据库读取股票数量: {len(codes)}")
+    else:
+        codes = parse_code_list(args.codes or args.code)
+
+    samples = collect_confirmed_bi_samples(codes, args.begin_time, args.end_time, args.signal_workers)
+    if not samples:
+        raise ValueError("没有生成任何确认下笔样本，请检查数据源连接、股票代码或时间范围。")
+    if len(samples) < 20:
+        raise ValueError(f"确认下笔样本太少：{len(samples)}，请扩大时间范围。")
+
+    train_samples, test_samples, split_info = split_by_time(samples, args.train_ratio, args.split_time)
+    ensure_two_classes(train_samples, "训练集")
+    ensure_two_classes(test_samples, "测试集")
+
+    feature_meta = build_feature_meta(train_samples)
+    score_thresholds = [float(value) for value in args.score_thresholds.split(",") if value.strip()]
+    model, metrics, test_prob = train_correctness_model(
+        train_samples,
+        test_samples,
+        feature_meta,
+        args.random_state,
+        score_thresholds,
+    )
+    metrics.update({
+        "kl_type": DB_KL_TYPE,
+        "parent_kl_type": PARENT_DB_KL_TYPE,
+        "child_kl_type": CHILD_DB_KL_TYPE,
+        "split_mode": split_info["mode"],
+        "split_time": split_info["split_time"],
+        "train_period": split_info["train_period"],
+        "test_period": split_info["test_period"],
+        "train_code_count": len({sample.code for sample in train_samples}),
+        "test_code_count": len({sample.code for sample in test_samples}),
+        "run_config": build_run_config(args, codes, split_info),
+    })
+    if args.walk_forward:
+        walk_forward_test_periods = parse_period_list(args.walk_forward_test_periods)
+        if walk_forward_test_periods is None:
+            walk_forward_test_periods = sorted({sample_period(sample) for sample in test_samples})
+        metrics["walk_forward_metrics"] = run_walk_forward_validation(
+            samples,
+            walk_forward_test_periods,
+            args.random_state,
+            args.walk_forward_min_train_samples,
+            args.walk_forward_min_test_samples,
+            score_thresholds,
+            split_info["split_time"],
+        )
+
+    feature_importance = get_feature_importance(model, feature_meta)
+    score_by_key = {
+        (sample.code, sample.open_klu_idx): float(score)
+        for sample, score in zip(test_samples, test_prob)
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / "model.pkl").open("wb") as fid:
+        pickle.dump(model, fid)
+    with (output_dir / "feature.meta.json").open("w", encoding="utf-8") as fid:
+        json.dump(feature_meta, fid, ensure_ascii=False, indent=2)
+    with (output_dir / "metrics.json").open("w", encoding="utf-8") as fid:
+        json.dump(metrics, fid, ensure_ascii=False, indent=2)
+    with (output_dir / "feature_importance.json").open("w", encoding="utf-8") as fid:
+        json.dump(feature_importance, fid, ensure_ascii=False, indent=2)
+    write_samples_csv(output_dir / "samples.csv", samples, score_by_key)
+    write_libsvm(output_dir / "samples.libsvm", samples, feature_meta)
+    write_feature_importance(output_dir / "feature_importance.csv", feature_importance)
+
+    print(json.dumps(metrics, ensure_ascii=False, indent=2))
+    print(f"模型文件: {output_dir / 'model.pkl'}")
