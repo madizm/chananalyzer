@@ -10,6 +10,7 @@ from ChanConfig import CChanConfig
 from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
 from Plot.TradingViewDriver import build_tradingview_payload
 
+from .bsp_probability import build_bsp_probability_payload
 from .chart_params import parse_autype, parse_data_src, parse_lv
 
 
@@ -176,6 +177,30 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
         "autype": req.autype.name,
         "x_range": req.x_range,
     }
+    payload["probabilityMarkers"] = []
+    try:
+        probability_payload = build_bsp_probability_payload(
+            code=req.code,
+            lv=req.lv,
+            begin=req.begin,
+            end=req.end,
+            bars=payload.get("bars", []),
+            visible_range=payload.get("visibleRange"),
+        )
+        payload["probabilityModel"] = {key: value for key, value in probability_payload.items() if key != "markers"}
+        payload["probabilityMarkers"] = probability_payload.get("markers", [])
+        if payload["probabilityMarkers"]:
+            payload["legend"].extend([
+                {"label": "一买概率", "color": "#b91c1c"},
+                {"label": "一卖概率", "color": "#15803d"},
+            ])
+    except Exception as exc:
+        payload["probabilityModel"] = {
+            "enabled": req.lv == KL_TYPE.K_30M,
+            "status": "error",
+            "reason": str(exc),
+            "markers": [],
+        }
     payload["cache"] = {"hit": False}
 
     if use_cache:
