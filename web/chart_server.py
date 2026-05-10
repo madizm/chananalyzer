@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .chart_payload import build_chart_request, build_payload, payload_cache
+from .signal_payload import build_signal_dashboard, list_signal_runs
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -27,6 +28,11 @@ def root():
 @app.get("/chart", include_in_schema=False)
 def chart_page():
     return FileResponse(STATIC_DIR / "chart.html")
+
+
+@app.get("/signals", include_in_schema=False)
+def signals_page():
+    return FileResponse(STATIC_DIR / "signals.html")
 
 
 @app.get("/api/chart/payload")
@@ -63,3 +69,35 @@ def chart_payload(
 def clear_cache():
     payload_cache.clear()
     return {"ok": True}
+
+
+@app.get("/api/signals/runs")
+def signal_runs(limit: int = Query(20, ge=1, le=100)):
+    try:
+        return list_signal_runs(limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"读取扫描运行记录失败: {exc}") from exc
+
+
+@app.get("/api/signals/latest")
+def signal_latest(
+    run_id: int | None = Query(None, description="扫描运行ID；不传则取最新一次"),
+    min_prob: float = Query(0.60, ge=0.0, le=1.0),
+    side: str = Query("both", pattern="^(buy|sell|both)$"),
+    industry: str = Query("all", description="行业名称；all 表示全部"),
+    start_date: str | None = Query(None, description="信号开始日期，YYYY-MM-DD"),
+    end_date: str | None = Query(None, description="信号结束日期，YYYY-MM-DD"),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    try:
+        return build_signal_dashboard(
+            run_id=run_id,
+            min_prob=min_prob,
+            side=side,
+            industry=industry,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"读取模型信号失败: {exc}") from exc

@@ -10,7 +10,9 @@
     body { display: flex; flex-direction: column; }
     #topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; box-sizing: border-box; min-height: 72px; padding: 10px 14px; border-bottom: 1px solid #e5e7eb; background: #fff; }
     #left { display: flex; flex-direction: column; gap: 8px; min-width: 360px; }
+    #title-row { display: flex; align-items: center; gap: 12px; }
     #title { font-size: 16px; font-weight: 700; white-space: nowrap; }
+    #title-row a { color: #2563eb; font-size: 13px; text-decoration: none; }
     #query-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
     #query-form input, #query-form select { height: 28px; box-sizing: border-box; border: 1px solid #d0d7e2; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }
     #query-form input[name="code"] { width: 94px; }
@@ -35,7 +37,10 @@
 <body>
   <div id="topbar">
     <div id="left">
-      <div id="title">ChanAnalyzer 在线画图</div>
+      <div id="title-row">
+        <div id="title">ChanAnalyzer 在线画图</div>
+        <a href="/signals">模型信号</a>
+      </div>
       <form id="query-form">
         <input name="code" placeholder="股票代码" required />
         <select name="lv">

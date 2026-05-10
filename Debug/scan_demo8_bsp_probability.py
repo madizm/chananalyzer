@@ -6,9 +6,11 @@ import json
 import math
 import os
 import pickle
+import sqlite3
 import sys
 from bisect import bisect_left
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -40,6 +42,7 @@ from Debug.strategy_demo8 import (
 DEFAULT_BUY_MODEL_DIR = ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_buy"
 DEFAULT_SELL_MODEL_DIR = ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_sell"
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_scan"
+DEFAULT_DB_PATH = ROOT_DIR / "chan.db"
 DEFAULT_THRESHOLDS = (0.55, 0.60, 0.65)
 KEY_FEATURES = (
     "candidate_divergence_rate",
@@ -232,6 +235,194 @@ def write_csv(path: Path, rows: List[Dict], thresholds: List[float]) -> None:
             writer.writerow(row)
 
 
+def init_scan_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS demo8_bsp_probability_scan_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            begin_time TEXT,
+            end_time TEXT,
+            model_kl_type TEXT NOT NULL,
+            parent_kl_type TEXT NOT NULL,
+            child_kl_type TEXT NOT NULL,
+            signal_sides TEXT NOT NULL,
+            min_prob REAL NOT NULL,
+            recent_bars INTEGER NOT NULL,
+            thresholds TEXT NOT NULL,
+            scan_code_count INTEGER NOT NULL,
+            success_code_count INTEGER NOT NULL,
+            failure_code_count INTEGER NOT NULL,
+            candidate_count INTEGER NOT NULL,
+            filtered_count INTEGER NOT NULL,
+            buy_candidate_count INTEGER NOT NULL,
+            sell_candidate_count INTEGER NOT NULL,
+            workers INTEGER NOT NULL,
+            buy_model_dir TEXT NOT NULL,
+            sell_model_dir TEXT NOT NULL,
+            output_dir TEXT NOT NULL,
+            failures TEXT NOT NULL,
+            summary_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS demo8_bsp_probability_scan_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            signal_side TEXT NOT NULL,
+            open_time TEXT NOT NULL,
+            bi_idx INTEGER NOT NULL,
+            klu_idx INTEGER NOT NULL,
+            price REAL NOT NULL,
+            probability REAL NOT NULL,
+            hit_min_prob INTEGER NOT NULL,
+            threshold_hits TEXT NOT NULL,
+            candidate_divergence_rate REAL,
+            candidate_break_prev_extreme REAL,
+            entry_close_pos REAL,
+            child_close_pos REAL,
+            parent_range REAL,
+            ma_dist_10 REAL,
+            prev_bsp_divergence_rate REAL,
+            model_dir TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES demo8_bsp_probability_scan_runs(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_demo8_bsp_prob_runs_created_at
+            ON demo8_bsp_probability_scan_runs(created_at);
+        CREATE INDEX IF NOT EXISTS idx_demo8_bsp_prob_signals_run_id
+            ON demo8_bsp_probability_scan_signals(run_id);
+        CREATE INDEX IF NOT EXISTS idx_demo8_bsp_prob_signals_code
+            ON demo8_bsp_probability_scan_signals(code);
+        CREATE INDEX IF NOT EXISTS idx_demo8_bsp_prob_signals_open_time
+            ON demo8_bsp_probability_scan_signals(open_time);
+        CREATE INDEX IF NOT EXISTS idx_demo8_bsp_prob_signals_probability
+            ON demo8_bsp_probability_scan_signals(probability);
+        """
+    )
+    conn.commit()
+
+
+def save_scan_to_db(
+    *,
+    db_path: Path,
+    rows: List[Dict],
+    summary: Dict,
+    thresholds: List[float],
+    output_dir: Path,
+    started_at: str,
+    finished_at: str,
+) -> int:
+    def optional_float(value):
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    created_at = datetime.now().isoformat(timespec="seconds")
+    threshold_fields = [threshold_field_name(threshold) for threshold in thresholds]
+    with sqlite3.connect(db_path) as conn:
+        init_scan_db(conn)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO demo8_bsp_probability_scan_runs (
+                started_at, finished_at, begin_time, end_time,
+                model_kl_type, parent_kl_type, child_kl_type,
+                signal_sides, min_prob, recent_bars, thresholds,
+                scan_code_count, success_code_count, failure_code_count,
+                candidate_count, filtered_count, buy_candidate_count, sell_candidate_count,
+                workers, buy_model_dir, sell_model_dir, output_dir, failures, summary_json,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                started_at,
+                finished_at,
+                summary["begin_time"],
+                summary["end_time"],
+                summary["model_kl_type"],
+                summary["parent_kl_type"],
+                summary["child_kl_type"],
+                json.dumps(summary["signal_sides"], ensure_ascii=False),
+                float(summary["min_prob"]),
+                int(summary["recent_bars"]),
+                json.dumps(summary["thresholds"], ensure_ascii=False),
+                int(summary["scan_code_count"]),
+                int(summary["success_code_count"]),
+                int(summary["failure_code_count"]),
+                int(summary["candidate_count"]),
+                int(summary["filtered_count"]),
+                int(summary["buy_candidate_count"]),
+                int(summary["sell_candidate_count"]),
+                int(summary["workers"]),
+                summary["buy_model_dir"],
+                summary["sell_model_dir"],
+                str(output_dir),
+                json.dumps(summary["failures"], ensure_ascii=False),
+                json.dumps(summary, ensure_ascii=False),
+                created_at,
+            ),
+        )
+        run_id = int(cursor.lastrowid)
+        summary_with_db = {
+            **summary,
+            "db_path": str(db_path),
+            "db_run_id": run_id,
+        }
+        cursor.execute(
+            "UPDATE demo8_bsp_probability_scan_runs SET summary_json = ? WHERE id = ?",
+            (json.dumps(summary_with_db, ensure_ascii=False), run_id),
+        )
+        signal_rows = []
+        for row in rows:
+            threshold_hits = {field: bool(row.get(field)) for field in threshold_fields}
+            signal_rows.append((
+                run_id,
+                row["code"],
+                row["signal_side"],
+                row["open_time"],
+                int(row["bi_idx"]),
+                int(row["klu_idx"]),
+                float(row["price"]),
+                float(row["probability"]),
+                int(bool(row["hit_min_prob"])),
+                json.dumps(threshold_hits, ensure_ascii=False),
+                optional_float(row.get("candidate_divergence_rate")),
+                optional_float(row.get("candidate_break_prev_extreme")),
+                optional_float(row.get("entry_close_pos")),
+                optional_float(row.get("child_close_pos")),
+                optional_float(row.get("parent_range")),
+                optional_float(row.get("ma_dist_10")),
+                optional_float(row.get("prev_bsp_divergence_rate")),
+                row["model_dir"],
+                created_at,
+            ))
+        cursor.executemany(
+            """
+            INSERT INTO demo8_bsp_probability_scan_signals (
+                run_id, code, signal_side, open_time, bi_idx, klu_idx,
+                price, probability, hit_min_prob, threshold_hits,
+                candidate_divergence_rate, candidate_break_prev_extreme,
+                entry_close_pos, child_close_pos, parent_range, ma_dist_10,
+                prev_bsp_divergence_rate, model_dir, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            signal_rows,
+        )
+        conn.commit()
+        return run_id
+
+
 def build_summary(
     *,
     args,
@@ -288,6 +479,8 @@ def parse_args():
     parser.add_argument("--sell-model-dir", default=str(DEFAULT_SELL_MODEL_DIR))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--output", default=None, help="可选：过滤结果 CSV 路径；不传则写入 output-dir/signals_filtered.csv。")
+    parser.add_argument("--db-path", default=str(DEFAULT_DB_PATH), help="扫描结果写入的 SQLite 数据库路径。")
+    parser.add_argument("--save-db", action=argparse.BooleanOptionalAction, default=True, help="是否保存扫描结果到数据库。")
     return parser.parse_args()
 
 
@@ -301,6 +494,7 @@ if __name__ == "__main__":
     worker_count = resolve_workers(args.workers, len(codes))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    started_at = datetime.now().isoformat(timespec="seconds")
 
     recent_desc = f"最近{args.recent_bars}根30M K线" if args.recent_bars > 0 else "全历史"
     print(f"扫描股票数量: {len(codes)}, signal_side={args.signal_side}, recent={recent_desc}, workers={worker_count}")
@@ -358,6 +552,7 @@ if __name__ == "__main__":
         rows.extend(rows_by_code.get(code, []))
     rows.sort(key=lambda item: (-float(item["probability"]), item["open_time"], item["code"], item["signal_side"]))
     filtered_rows = [row for row in rows if float(row["probability"]) >= args.min_prob]
+    finished_at = datetime.now().isoformat(timespec="seconds")
 
     all_csv = output_dir / "signals_all.csv"
     filtered_csv = Path(args.output) if args.output else output_dir / "signals_filtered.csv"
@@ -375,6 +570,18 @@ if __name__ == "__main__":
         signal_sides=signal_sides,
         worker_count=worker_count,
     )
+    if args.save_db:
+        db_run_id = save_scan_to_db(
+            db_path=Path(args.db_path),
+            rows=rows,
+            summary=summary,
+            thresholds=thresholds,
+            output_dir=output_dir,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+        summary["db_path"] = str(Path(args.db_path))
+        summary["db_run_id"] = db_run_id
     with summary_path.open("w", encoding="utf-8") as fid:
         json.dump(summary, fid, ensure_ascii=False, indent=2)
 
@@ -382,3 +589,5 @@ if __name__ == "__main__":
     print(f"全量结果: {all_csv}")
     print(f"过滤结果: {filtered_csv}")
     print(f"汇总文件: {summary_path}")
+    if args.save_db:
+        print(f"数据库运行ID: {summary['db_run_id']}")
