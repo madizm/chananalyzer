@@ -6,6 +6,7 @@ This folder contains organized markdown documents generated from the following T
 - `get_stock_info`
 - `get_more_info`
 - `get_stock_list`
+- `get_stock_list_in_sector`
 - `什么是量化交易`（回测及模拟交易）
 
 ## Local Wrapper Usage
@@ -91,6 +92,8 @@ python docs/tdx_api/tdxdata_test.py --dll-path D:\tdx_new\PYPlugins\TPythClient.
 - `docs/tdx_api/04_get_stock_list.md`
 - `docs/tdx_api/05_what_is_quant_trading.md`
 - `docs/tdx_api/06_user_sector.md`
+- `docs/tdx_api/07_get_stock_list_in_sector.md`
+- `docs/tdx_api/08_concept_sector_schema.md`
 
 ## Sources
 
@@ -100,3 +103,4 @@ python docs/tdx_api/tdxdata_test.py --dll-path D:\tdx_new\PYPlugins\TPythClient.
 - https://help.tdx.com.cn/quant/docs/markdown/mindoc-1ctuhttn72svo/mindoc-1h10qo3uj48fg.html
 - https://help.tdx.com.cn/quant/docs/markdown/mindoc-1h12t4q6fg29o.html
 - https://help.tdx.com.cn/quant/docs/markdown/mindoc-1h139a4ckchkk/
+- https://help.tdx.com.cn/quant/docs/markdown/mindoc-1ctuhttn72svo/mindoc-1h10r92mchgug.html

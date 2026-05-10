@@ -63,7 +63,7 @@ get_stock_list(
 ## Example
 
 ```python
-from tqcenter import tq
+from TdxLib.tqcenter import tq
 
 tq.initialize(__file__)
 
@@ -72,4 +72,62 @@ print(stock_list)
 
 stock_list2 = tq.get_stock_list('16', list_type=1)
 print(stock_list2)
+```
+
+## Concept sectors
+
+`market='12'` 返回概念板块列表：
+
+```python
+from TdxLib.tqcenter import tq
+
+try:
+    tq.initialize(__file__)
+    concept_sectors = tq.get_stock_list("12", list_type=1)
+    print(concept_sectors)
+finally:
+    tq.close()
+```
+
+本项目提供入库脚本，会保存到 `chan.db` 的 `tdx_concept_sectors` 表：
+
+```powershell
+python scripts/cache_tdx_concept_sectors.py
+```
+
+默认还会调用 `get_stock_list_in_sector` 保存每个概念板块的成分股关系到
+`tdx_concept_sector_stocks` 表。只想刷新概念板块本身时使用：
+
+```powershell
+python scripts/cache_tdx_concept_sectors.py --sectors-only
+```
+
+如 `TPythClient.dll` 不在默认位置：
+
+```powershell
+python scripts/cache_tdx_concept_sectors.py --dll-path D:\tdx_new\PYPlugins\TPythClient.dll
+```
+
+表结构：
+
+```sql
+CREATE TABLE IF NOT EXISTS tdx_concept_sectors (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    market TEXT NOT NULL DEFAULT '',
+    source_market TEXT NOT NULL DEFAULT '12',
+    raw_json TEXT,
+    updated_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tdx_concept_sector_stocks (
+    sector_code TEXT NOT NULL,
+    code TEXT NOT NULL DEFAULT '',
+    stock_code TEXT NOT NULL,
+    stock_name TEXT NOT NULL DEFAULT '',
+    market TEXT NOT NULL DEFAULT '',
+    raw_json TEXT,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (sector_code, stock_code)
+);
 ```
