@@ -13,6 +13,7 @@ DEFAULT_DB_PATH = ROOT_DIR / "chan.db"
 RUN_TABLE = "demo8_bsp_probability_scan_runs"
 SIGNAL_TABLE = "demo8_bsp_probability_scan_signals"
 TOP_INDUSTRY_LIMIT = 10
+TOP_CONCEPT_LIMIT = 10
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -96,6 +97,7 @@ def _empty_payload(message: str) -> Dict[str, Any]:
             "probability_distribution": [],
             "side_stats": [],
             "industry_stats": [],
+            "concept_stats": [],
         },
     }
 
@@ -160,6 +162,37 @@ def _load_signals(conn: sqlite3.Connection, run_id: int) -> List[Dict[str, Any]]
     return [_parse_signal(row) for row in rows]
 
 
+def _attach_concepts(conn: sqlite3.Connection, signals: List[Dict[str, Any]]) -> None:
+    if not signals or not _table_exists(conn, "tdx_concept_sector_stocks") or not _table_exists(conn, "tdx_concept_sectors"):
+        for signal in signals:
+            signal["concepts"] = []
+        return
+
+    codes = sorted({str(signal.get("code") or "") for signal in signals if signal.get("code")})
+    concept_by_code: Dict[str, List[Dict[str, str]]] = {code: [] for code in codes}
+    for offset in range(0, len(codes), 800):
+        batch = codes[offset:offset + 800]
+        placeholders = ",".join("?" for _ in batch)
+        rows = conn.execute(
+            f"""
+            SELECT t.code AS stock_code, s.code AS concept_code, s.name AS concept_name
+            FROM tdx_concept_sector_stocks AS t
+            JOIN tdx_concept_sectors AS s ON s.code = t.sector_code
+            WHERE t.code IN ({placeholders})
+            ORDER BY s.name, s.code
+            """,
+            batch,
+        ).fetchall()
+        for row in rows:
+            concept_by_code.setdefault(row["stock_code"], []).append({
+                "code": row["concept_code"],
+                "name": row["concept_name"],
+            })
+
+    for signal in signals:
+        signal["concepts"] = concept_by_code.get(str(signal.get("code") or ""), [])
+
+
 def _distribution(signals: List[Dict[str, Any]], min_prob: float) -> List[Dict[str, Any]]:
     buckets = [
         {
@@ -167,6 +200,7 @@ def _distribution(signals: List[Dict[str, Any]], min_prob: float) -> List[Dict[s
             "count": 0,
             "side_stats": [],
             "industry_stats": [],
+            "concept_stats": [],
             "_signals": [],
         }
         for idx in range(10)
@@ -179,6 +213,7 @@ def _distribution(signals: List[Dict[str, Any]], min_prob: float) -> List[Dict[s
     for bucket in buckets:
         bucket["side_stats"] = _side_stats(bucket["_signals"], min_prob)
         bucket["industry_stats"] = _industry_stats(bucket["_signals"])
+        bucket["concept_stats"] = _concept_stats(bucket["_signals"])
         bucket.pop("_signals", None)
     return buckets
 
@@ -219,6 +254,36 @@ def _industry_stats(signals: List[Dict[str, Any]], limit: int = TOP_INDUSTRY_LIM
     return rows[:limit]
 
 
+def _concept_stats(signals: List[Dict[str, Any]], limit: int = TOP_CONCEPT_LIMIT) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    concept_name_by_key: Dict[str, str] = {}
+    for signal in signals:
+        concepts = signal.get("concepts") or []
+        if not concepts:
+            grouped.setdefault("未分类", []).append(signal)
+            concept_name_by_key["未分类"] = "未分类"
+            continue
+        for concept in concepts:
+            concept_code = concept.get("code") or concept.get("name") or "未分类"
+            concept_name_by_key[concept_code] = concept.get("name") or concept_code
+            grouped.setdefault(concept_code, []).append(signal)
+
+    rows = []
+    for concept_code, items in grouped.items():
+        rows.append({
+            "concept_code": concept_code,
+            "concept_name": concept_name_by_key.get(concept_code, concept_code),
+            "candidate_count": len(items),
+            "buy_count": sum(1 for item in items if item.get("signal_side") == "buy"),
+            "sell_count": sum(1 for item in items if item.get("signal_side") == "sell"),
+            "code_count": len({item.get("code") for item in items}),
+            "avg_probability": sum(float(item.get("probability") or 0.0) for item in items) / len(items) if items else None,
+            "max_probability": max((float(item.get("probability") or 0.0) for item in items), default=None),
+        })
+    rows.sort(key=lambda item: (-item["candidate_count"], -(item["avg_probability"] or 0.0), item["concept_name"]))
+    return rows[:limit]
+
+
 def _industry_options(signals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     grouped: Dict[str, set] = {}
     for signal in signals:
@@ -227,6 +292,22 @@ def _industry_options(signals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [
         {"industry": industry, "code_count": len(codes)}
         for industry, codes in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
+    ]
+
+
+def _concept_options(signals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, set] = {}
+    name_by_code: Dict[str, str] = {}
+    for signal in signals:
+        for concept in signal.get("concepts") or []:
+            concept_code = concept.get("code") or concept.get("name")
+            if not concept_code:
+                continue
+            name_by_code[concept_code] = concept.get("name") or concept_code
+            grouped.setdefault(concept_code, set()).add(signal.get("code"))
+    return [
+        {"concept_code": concept_code, "concept_name": name_by_code.get(concept_code, concept_code), "code_count": len(codes)}
+        for concept_code, codes in sorted(grouped.items(), key=lambda item: (-len(item[1]), name_by_code.get(item[0], item[0])))
     ]
 
 
@@ -258,6 +339,7 @@ def _filter_signals(
     side: str,
     min_prob: float,
     industry: str,
+    concept: str,
     start_date: Optional[str],
     end_date: Optional[str],
 ) -> List[Dict[str, Any]]:
@@ -269,6 +351,10 @@ def _filter_signals(
             continue
         if industry and industry != "all" and (signal.get("industry") or "未分类") != industry:
             continue
+        if concept and concept != "all":
+            concepts = signal.get("concepts") or []
+            if not any(concept in {item.get("code"), item.get("name")} for item in concepts):
+                continue
         if float(signal.get("probability") or 0.0) < min_prob:
             continue
         open_dt = _signal_time(signal)
@@ -286,6 +372,7 @@ def build_signal_dashboard(
     min_prob: float = 0.60,
     side: str = "both",
     industry: str = "all",
+    concept: str = "all",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     limit: int = 200,
@@ -301,6 +388,7 @@ def build_signal_dashboard(
         if selected_run is None:
             return _empty_payload("暂无扫描记录。")
         all_signals = _load_signals(conn, int(selected_run["id"]))
+        _attach_concepts(conn, all_signals)
         runs = list_signal_runs(limit=20, db_path=db_path)["runs"]
 
     filtered = _filter_signals(
@@ -308,6 +396,7 @@ def build_signal_dashboard(
         side=side,
         min_prob=min_prob,
         industry=industry,
+        concept=concept,
         start_date=start_date,
         end_date=end_date,
     )
@@ -323,13 +412,16 @@ def build_signal_dashboard(
             "probability_distribution": _distribution(all_signals, min_prob),
             "side_stats": _side_stats(all_signals, min_prob),
             "industry_stats": _industry_stats(all_signals),
+            "concept_stats": _concept_stats(all_signals),
         },
         "industry_options": _industry_options(all_signals),
+        "concept_options": _concept_options(all_signals),
         "filters": {
             "run_id": selected_run["id"],
             "min_prob": min_prob,
             "side": side,
             "industry": industry,
+            "concept": concept,
             "start_date": start_date,
             "end_date": end_date,
             "limit": limit,

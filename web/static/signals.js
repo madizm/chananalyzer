@@ -6,6 +6,8 @@ const sideStatsTitleElement = document.getElementById('side-stats-title');
 const sideStatsElement = document.getElementById('side-stats');
 const industryStatsTitleElement = document.getElementById('industry-stats-title');
 const industryStatsElement = document.getElementById('industry-stats');
+const conceptStatsTitleElement = document.getElementById('concept-stats-title');
+const conceptStatsElement = document.getElementById('concept-stats');
 const signalsBodyElement = document.getElementById('signals-body');
 const signalCountElement = document.getElementById('signal-count');
 
@@ -13,6 +15,7 @@ let runs = [];
 let dashboardData = null;
 let selectedBucketIndex = null;
 let industries = [];
+let concepts = [];
 
 function showMessage(text, isError = false) {
   messageElement.style.display = text ? 'block' : 'none';
@@ -56,6 +59,16 @@ function renderIndustryOptions(selectedIndustry) {
     const selected = String(item.industry) === String(selectedIndustry || 'all') ? 'selected' : '';
     const suffix = item.code_count == null ? '' : ` (${item.code_count})`;
     return `<option value="${item.industry}" ${selected}>${item.label}${suffix}</option>`;
+  }).join('');
+}
+
+function renderConceptOptions(selectedConcept) {
+  const select = filtersElement.concept;
+  const options = [{ concept_code: 'all', concept_name: '全部', code_count: null }, ...concepts];
+  select.innerHTML = options.map(item => {
+    const selected = String(item.concept_code) === String(selectedConcept || 'all') ? 'selected' : '';
+    const suffix = item.code_count == null ? '' : ` (${item.code_count})`;
+    return `<option value="${item.concept_code}" ${selected}>${item.concept_name}${suffix}</option>`;
   }).join('');
 }
 
@@ -113,6 +126,19 @@ function renderIndustryStats(items, title) {
   )).join('');
 }
 
+function renderConceptStats(items, title) {
+  conceptStatsTitleElement.textContent = title;
+  conceptStatsElement.innerHTML = (items || []).map(item => (
+    `<tr>
+      <td><button class="stat-link" type="button" data-concept="${item.concept_code}" data-side="both">${item.concept_name}</button></td>
+      <td>${item.candidate_count}</td>
+      <td><button class="stat-link" type="button" data-concept="${item.concept_code}" data-side="buy">买 ${item.buy_count}</button></td>
+      <td><button class="stat-link" type="button" data-concept="${item.concept_code}" data-side="sell">卖 ${item.sell_count}</button></td>
+      <td>均值 ${formatPct(item.avg_probability)}</td>
+    </tr>`
+  )).join('');
+}
+
 function renderStats(data) {
   const stats = data.stats || {};
   const distribution = stats.probability_distribution || [];
@@ -121,9 +147,11 @@ function renderStats(data) {
     const bucket = distribution[selectedBucketIndex];
     renderSideStats(bucket.side_stats || [], `方向对比（${bucket.bucket}）`);
     renderIndustryStats(bucket.industry_stats || [], `行业统计（${bucket.bucket}）`);
+    renderConceptStats(bucket.concept_stats || [], `概念统计（${bucket.bucket}）`);
   } else {
     renderSideStats(stats.side_stats || [], '方向对比（全部）');
     renderIndustryStats(stats.industry_stats || [], '行业统计（全部）');
+    renderConceptStats(stats.concept_stats || [], '概念统计（全部）');
   }
 }
 
@@ -161,11 +189,19 @@ function paramsFromForm() {
   if (filtersElement.run_id.value) params.set('run_id', filtersElement.run_id.value);
   params.set('side', filtersElement.side.value || 'both');
   params.set('industry', filtersElement.industry.value || 'all');
+  params.set('concept', filtersElement.concept.value || 'all');
   if (filtersElement.start_date.value) params.set('start_date', filtersElement.start_date.value);
   if (filtersElement.end_date.value) params.set('end_date', filtersElement.end_date.value);
   params.set('min_prob', filtersElement.min_prob.value || '0.6');
   params.set('limit', filtersElement.limit.value || '200');
   return params;
+}
+
+function applyFiltersAndReload() {
+  return loadDashboard().catch(error => {
+    console.error(error);
+    showMessage(error && error.message ? error.message : String(error), true);
+  });
 }
 
 async function loadDashboard() {
@@ -183,8 +219,10 @@ async function loadDashboard() {
   }
   runs = data.runs || runs;
   industries = data.industry_options || industries;
+  concepts = data.concept_options || concepts;
   renderRunOptions(data.filters && data.filters.run_id);
   renderIndustryOptions(data.filters && data.filters.industry);
+  renderConceptOptions(data.filters && data.filters.concept);
   renderSummary(data);
   renderStats(data);
   renderSignals(data.signals || []);
@@ -202,11 +240,32 @@ industryStatsElement.addEventListener('click', event => {
   const button = event.target.closest('[data-industry]');
   if (!button) return;
   filtersElement.industry.value = button.getAttribute('data-industry') || 'all';
+  filtersElement.concept.value = 'all';
   filtersElement.side.value = button.getAttribute('data-side') || 'both';
-  loadDashboard().catch(error => {
-    console.error(error);
-    showMessage(error && error.message ? error.message : String(error), true);
-  });
+  void applyFiltersAndReload();
+});
+
+conceptStatsElement.addEventListener('click', event => {
+  const button = event.target.closest('[data-concept]');
+  if (!button) return;
+  filtersElement.concept.value = button.getAttribute('data-concept') || 'all';
+  filtersElement.industry.value = 'all';
+  filtersElement.side.value = button.getAttribute('data-side') || 'both';
+  void applyFiltersAndReload();
+});
+
+filtersElement.industry.addEventListener('change', () => {
+  filtersElement.concept.value = 'all';
+  void applyFiltersAndReload();
+});
+
+filtersElement.concept.addEventListener('change', () => {
+  filtersElement.industry.value = 'all';
+  void applyFiltersAndReload();
+});
+
+filtersElement.side.addEventListener('change', () => {
+  void applyFiltersAndReload();
 });
 
 async function init() {

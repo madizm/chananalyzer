@@ -24,12 +24,12 @@
     .metric-value { margin-top: 6px; font-size: 20px; font-weight: 700; }
     .panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 14px; overflow: hidden; }
     .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #e5e7eb; font-weight: 700; font-size: 14px; }
-    .stats-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 0; }
+    .stats-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 0; }
     .stats-block { padding: 10px 12px; border-right: 1px solid #e5e7eb; min-height: 110px; }
     .stats-block:last-child { border-right: 0; }
     .tiny-table { width: 100%; border-collapse: collapse; font-size: 12px; }
     .tiny-table td { padding: 4px 0; border-bottom: 1px solid #f1f5f9; }
-    #industry-stats td { padding-top: 7px; padding-bottom: 7px; }
+    #industry-stats td, #concept-stats td { padding-top: 3px; padding-bottom: 3px; line-height: 1.15; }
     .stat-link { border: 0; background: transparent; color: #2563eb; font: inherit; padding: 0; cursor: pointer; }
     .stat-link:hover { text-decoration: underline; }
     .bars { display: grid; gap: 4px; }
@@ -81,6 +81,7 @@
         </select>
       </label>
       <label>行业 <select name="industry"><option value="all">全部</option></select></label>
+      <label>概念 <select name="concept"><option value="all">全部</option></select></label>
       <label>开始 <input name="start_date" type="date" /></label>
       <label>结束 <input name="end_date" type="date" /></label>
       <label>最小概率 <input name="min_prob" type="number" min="0" max="1" step="0.01" value="0.60" /></label>
@@ -102,6 +103,10 @@
         <div class="stats-block">
           <strong id="industry-stats-title">行业统计</strong>
           <table class="tiny-table"><tbody id="industry-stats"></tbody></table>
+        </div>
+        <div class="stats-block">
+          <strong id="concept-stats-title">概念统计</strong>
+          <table class="tiny-table"><tbody id="concept-stats"></tbody></table>
         </div>
       </div>
     </section>
@@ -133,6 +138,6 @@
       </div>
     </section>
   </main>
-  <script src="/static/signals.js?v=20260510-10"></script>
+  <script src="/static/signals.js?v=20260510-14"></script>
 </body>
 </html>
