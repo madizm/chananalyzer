@@ -68,21 +68,32 @@ def _chart_url(signal: Dict[str, Any]) -> str:
     end = ""
     try:
         open_dt = datetime.strptime(open_time, "%Y/%m/%d %H:%M")
-        begin = (open_dt - timedelta(days=20)).date().isoformat()
-        end = (open_dt + timedelta(days=5)).date().isoformat()
+        end_dt = open_dt + timedelta(days=5)
+        begin_dt = _add_months(end_dt, -3)
+        begin = begin_dt.date().isoformat()
+        end = end_dt.date().isoformat()
     except ValueError:
         pass
     params = {
         "code": signal.get("code", ""),
         "lv": "30m",
         "data_src": "CACHE_DB",
-        "x_range": "160",
+        "x_range": "500",
     }
     if begin:
         params["begin"] = begin
     if end:
         params["end"] = end
     return f"/chart?{urlencode(params)}"
+
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    month = dt.month - 1 + months
+    year = dt.year + month // 12
+    month = month % 12 + 1
+    days_in_month = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    day = min(dt.day, days_in_month[month - 1])
+    return dt.replace(year=year, month=month, day=day)
 
 
 def _empty_payload(message: str) -> Dict[str, Any]:

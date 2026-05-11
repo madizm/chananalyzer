@@ -123,7 +123,7 @@ def build_chart_request(
     end: str | None = None,
     data_src: str | None = None,
     autype: str | None = None,
-    x_range: int = 200,
+    x_range: int = 500,
     plot_mean: bool = False,
 ) -> ChartRequest:
     parsed_lv = parse_lv(lv)

@@ -43,7 +43,7 @@ def chart_payload(
     end: str | None = Query(None, description="结束日期，YYYY-MM-DD"),
     data_src: str = Query("TDX", description="数据源：TDX/TUSHARE/CACHE_DB/..."),
     autype: str = Query("QFQ", description="复权：QFQ/HFQ/NONE"),
-    x_range: int = Query(200, ge=0, description="初始可见 K 线数量，0 表示全部"),
+    x_range: int = Query(500, ge=0, description="初始可见 K 线数量，0 表示全部"),
     plot_mean: bool = Query(False, description="是否展示均线"),
     refresh: bool = Query(False, description="是否跳过内存缓存重新计算"),
 ):

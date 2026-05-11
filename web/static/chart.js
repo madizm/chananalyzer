@@ -34,7 +34,7 @@ function initFormFromUrl() {
   formElement.lv.value = params.get('lv') || 'day';
   formElement.begin.value = params.get('begin') || '';
   formElement.end.value = params.get('end') || '';
-  formElement.x_range.value = params.get('x_range') || '200';
+  formElement.x_range.value = params.get('x_range') || '500';
   formElement.data_src.value = params.get('data_src') || 'TDX';
   formElement.end.placeholder = today;
 }
