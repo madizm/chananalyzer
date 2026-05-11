@@ -873,6 +873,7 @@ class CTradingViewDriver:
       datafeed: createDatafeed(payload),
       library_path: libraryPath,
       locale: 'zh',
+      timezone: payload.timezone || 'Asia/Shanghai',
       theme: 'Light',
       disabled_features: [
         'use_localstorage_for_settings',
