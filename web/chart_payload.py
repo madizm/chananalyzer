@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
+import sqlite3
 from typing import Any
 
 from Chan import CChan
@@ -102,6 +104,58 @@ class PayloadCache:
 payload_cache = PayloadCache()
 
 
+def _clean_stock_code(code: str) -> str:
+    return code.strip().upper().split(".")[0]
+
+
+def _load_stock_info(code: str) -> dict[str, str]:
+    db_path = Path(__file__).resolve().parent.parent / "chan.db"
+    if not db_path.exists():
+        return {}
+
+    clean_code = _clean_stock_code(code)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT name, industry, area FROM stock_info WHERE code = ? LIMIT 1",
+                (clean_code,),
+            )
+            row = cursor.fetchone()
+    except sqlite3.Error:
+        return {}
+
+    if not row:
+        return {}
+    name, industry, area = row
+    return {
+        "name": name or "",
+        "industry": industry or "",
+        "area": area or "",
+    }
+
+
+def _apply_stock_display(payload: dict[str, Any], req: ChartRequest) -> None:
+    stock_info = _load_stock_info(req.code)
+    stock_name = stock_info.get("name", "").strip()
+    level_name = req.lv.name.split("K_")[-1]
+    display_name = f"{stock_name}({req.code})" if stock_name else req.code
+    display_title = f"{display_name}/{level_name}"
+
+    payload["stockInfo"] = {
+        "code": req.code,
+        "name": stock_name,
+        "industry": stock_info.get("industry", ""),
+        "area": stock_info.get("area", ""),
+        "displayName": display_name,
+    }
+    payload["title"] = display_title
+    symbol_info = payload.get("symbolInfo")
+    if isinstance(symbol_info, dict):
+        symbol_info["description"] = f"{display_name} Chan"
+        symbol_info["full_name"] = display_name
+
+
 def _default_begin(lv: KL_TYPE) -> str:
     today = date.today()
     if lv in _INTRADAY_LEVELS:
@@ -168,6 +222,7 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
         plot_config=plot_config,
         plot_para={"figure": {"x_range": req.x_range}},
     )
+    _apply_stock_display(payload, req)
     payload["request"] = {
         "code": req.code,
         "lv": req.lv.name,
