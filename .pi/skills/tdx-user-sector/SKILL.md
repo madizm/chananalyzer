@@ -1,11 +1,11 @@
 ---
 name: tdx-user-sector
-description: Add stocks to 通达信自选股 or create/update 通达信自定义板块 using the project's bundled TDX API. Use when the user asks to create custom sectors, add watchlist stocks, group stock codes into TDX blocks, or update 自选股/自定义板块.
+description: Add stocks to 通达信自选股 or create/update 通达信自定义板块 using the project's bundled TDX API. Use when the user asks to create custom sectors, add watchlist stocks, group stock codes into TDX blocks, or update 自选股/自定义板块 or query 持仓股.
 ---
 
 # TDX User Sector Skill
 
-用于把用户给出的股票清单/主题表格整理成通达信自选股或自定义板块，并通过项目内置 `TdxLib.tqcenter` 写入通达信客户端。
+用于把用户给出的股票清单/主题表格整理成通达信自选股或自定义板块，并通过项目内置 `TdxLib.tqcenter` 写入/查询通达信客户端自定义板块。
 
 ## When to use
 
@@ -15,7 +15,8 @@ Use this skill when the user asks for any of:
 - 添加股票到自选股 `ZXG`
 - 按行业、主题、表格分组创建板块
 - 修改、清空、重命名、删除通达信自定义板块
-- 使用 TDX API / `send_user_block` / `create_sector`
+- 查询自定义板块成分股，尤其是“持仓股”板块
+- 使用 TDX API / `send_user_block` / `create_sector` / `get_user_sector` / `get_stock_list_in_sector`
 
 ## Required environment
 
@@ -24,7 +25,31 @@ Use this skill when the user asks for any of:
 - 初始化方式应参考 `scripts/update_data.py` 与 `DataAPI/TdxAPI.py`：使用项目内置 `TdxLib.tqcenter`，不要直接依赖外部 `tqcenter` 包。
 - 如 DLL 路径不是默认值，使用环境变量 `TPYTHCLIENT_DLL`。
 
-## Workflow
+## Query workflow
+
+当用户说“查询持仓股”、“持仓股有哪些”、“查询持仓股板块”时，优先按**自定义板块**查询，而不是用 `get_stock_list('1')` 查询交易账户持仓。
+
+1. 初始化 TDX：使用项目内置 `DataAPI.TdxAPI.CTdxAPI._dll_path` 和 `TdxLib.tqcenter.tq.initialize(...)`。
+2. 调用 `tq.get_user_sector()` 获取自定义板块列表。
+3. 在结果中查找 `Name == '持仓股'` 或名称包含“持仓”的板块；当前常用代码为 `HOLDING`。
+4. 调用 `tq.get_stock_list_in_sector(block_code, block_type=1, list_type=1)` 查询成分股。
+5. 向用户输出 `Code` + `Name` 列表。
+
+可直接运行 helper：
+
+```bash
+python .pi/skills/tdx-user-sector/scripts/query_sector.py 持仓股
+```
+
+输出 JSON：
+
+```bash
+python .pi/skills/tdx-user-sector/scripts/query_sector.py 持仓股 --json
+```
+
+> 注意：`tq.get_stock_list('1', list_type=1)` 是交易账户持仓分类，可能返回空；用户提到“自定义板块叫持仓股”时必须使用上面的自定义板块查询流程。
+
+## Update workflow
 
 1. Parse the user's stocks into sectors.
    - A 股代码统一转换为 `000001.SZ` / `600000.SH` / `688001.SH` / `430xxx.BJ` 格式。
@@ -76,9 +101,19 @@ See `scripts/apply_sectors.py` in this skill. It:
 - Replaces or merges constituents using `clear_sector` and `send_user_block`.
 - Closes TDX connection in `finally`.
 
+See `scripts/query_sector.py` in this skill. It:
+
+- Finds custom sectors via `tq.get_user_sector()`.
+- Matches sector code/name, defaulting to `持仓股`.
+- Queries constituents with `tq.get_stock_list_in_sector(..., block_type=1, list_type=1)`.
+- Prints tabular output or raw JSON with `--json`.
+
 ## API reference
 
-Project docs: `docs/tdx_api/06_user_sector.md`
+Project docs:
+
+- `docs/tdx_api/06_user_sector.md`
+- `docs/tdx_api/07_get_stock_list_in_sector.md`
 
 Core functions:
 
@@ -86,5 +121,6 @@ Core functions:
 - `tq.clear_sector(block_code)`
 - `tq.send_user_block(block_code, stocks, show=False)`
 - `tq.get_user_sector()`
+- `tq.get_stock_list_in_sector(block_code, block_type=1, list_type=1)`
 - `tq.delete_sector(block_code)`
 - `tq.rename_sector(block_code, block_name)`
