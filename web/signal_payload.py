@@ -70,17 +70,10 @@ def _parse_signal(row: sqlite3.Row) -> Dict[str, Any]:
 
 
 def _chart_url(signal: Dict[str, Any]) -> str:
-    open_time = str(signal.get("open_time") or "")
-    begin = ""
-    end = ""
-    try:
-        open_dt = datetime.strptime(open_time, "%Y/%m/%d %H:%M")
-        end_dt = open_dt + timedelta(days=5)
-        begin_dt = _add_months(end_dt, -3)
-        begin = begin_dt.date().isoformat()
-        end = end_dt.date().isoformat()
-    except ValueError:
-        pass
+    end_dt = datetime.now()
+    begin_dt = _add_months(end_dt, -4)
+    begin = begin_dt.date().isoformat()
+    end = end_dt.date().isoformat()
     params = {
         "code": signal.get("code", ""),
         "lv": "30m",
