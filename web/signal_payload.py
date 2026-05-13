@@ -10,8 +10,8 @@ from urllib.parse import urlencode
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = ROOT_DIR / "chan.db"
-RUN_TABLE = "demo8_bsp_probability_scan_runs"
-SIGNAL_TABLE = "demo8_bsp_probability_scan_signals"
+RUN_TABLE = "bsp_probability_scan_runs"
+SIGNAL_TABLE = "bsp_probability_scan_signals"
 TOP_INDUSTRY_LIMIT = 10
 TOP_CONCEPT_LIMIT = 10
 
@@ -45,6 +45,8 @@ def _row_dict(row: sqlite3.Row) -> Dict[str, Any]:
 
 def _parse_run(row: sqlite3.Row) -> Dict[str, Any]:
     data = _row_dict(row)
+    data["target_bsp_types"] = _json_loads(data.get("target_bsp_types"), [])
+    data["dependency_bsp_types"] = _json_loads(data.get("dependency_bsp_types"), [])
     data["signal_sides"] = _json_loads(data.get("signal_sides"), [])
     data["thresholds"] = _json_loads(data.get("thresholds"), [])
     data["failures"] = _json_loads(data.get("failures"), {})
@@ -57,6 +59,11 @@ def _parse_signal(row: sqlite3.Row) -> Dict[str, Any]:
     data = _row_dict(row)
     data["hit_min_prob"] = bool(data.get("hit_min_prob"))
     data["threshold_hits"] = _json_loads(data.get("threshold_hits"), {})
+    data["feature_snapshot"] = _json_loads(data.get("feature_snapshot_json"), {})
+    if isinstance(data["feature_snapshot"], dict):
+        for key, value in data["feature_snapshot"].items():
+            data.setdefault(key, value)
+    data.pop("feature_snapshot_json", None)
     data["name"] = data.get("name") or data.get("code")
     data["chart_url"] = _chart_url(data)
     return data
@@ -121,7 +128,8 @@ def list_signal_runs(limit: int = 20, db_path: Path = DEFAULT_DB_PATH) -> Dict[s
             return {"available": False, "runs": []}
         rows = conn.execute(
             f"""
-            SELECT id, started_at, finished_at, begin_time, end_time, min_prob, recent_bars,
+            SELECT id, started_at, finished_at, model_name, target_group, target_bsp_types,
+                   begin_time, end_time, min_prob, recent_bars,
                    scan_code_count, success_code_count, failure_code_count,
                    candidate_count, filtered_count, buy_candidate_count, sell_candidate_count,
                    created_at
@@ -131,7 +139,7 @@ def list_signal_runs(limit: int = 20, db_path: Path = DEFAULT_DB_PATH) -> Dict[s
             """,
             (max(1, min(limit, 100)),),
         ).fetchall()
-    return {"available": True, "runs": [_row_dict(row) for row in rows]}
+    return {"available": True, "runs": [_parse_run(row) for row in rows]}
 
 
 def _latest_run_id(conn: sqlite3.Connection) -> Optional[int]:

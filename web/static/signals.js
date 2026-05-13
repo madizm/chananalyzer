@@ -39,10 +39,36 @@ function metric(label, value) {
   return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`;
 }
 
+function targetGroupLabel(value) {
+  if (value === 'first') return '一类';
+  if (value === 'second') return '二类';
+  if (value === 'third') return '三类';
+  return value || '-';
+}
+
+function targetTypesLabel(value) {
+  if (Array.isArray(value)) return value.join('/');
+  if (typeof value === 'string') {
+    const clean = value.trim();
+    if (!clean) return '-';
+    try {
+      const parsed = JSON.parse(clean);
+      if (Array.isArray(parsed)) return parsed.join('/');
+    } catch (_) {
+      return clean;
+    }
+    return clean;
+  }
+  return '-';
+}
+
 function renderRunOptions(selectedRunId) {
   const select = filtersElement.run_id;
   select.innerHTML = runs.map(run => {
-    const label = `#${run.id} ${run.created_at || run.finished_at || ''} 候选${run.candidate_count}`;
+    const modelLabel = [run.model_name, targetGroupLabel(run.target_group), targetTypesLabel(run.target_bsp_types)]
+      .filter(Boolean)
+      .join(' ');
+    const label = `#${run.id} ${modelLabel} ${run.created_at || run.finished_at || ''} 候选${run.candidate_count}`;
     const selected = String(run.id) === String(selectedRunId) ? 'selected' : '';
     return `<option value="${run.id}" ${selected}>${label}</option>`;
   }).join('');
@@ -75,13 +101,15 @@ function renderConceptOptions(selectedConcept) {
 function renderSummary(data) {
   const summary = data.summary || {};
   const run = data.selected_run || {};
+  const modelText = `${summary.model_name || run.model_name || '-'} / ${targetGroupLabel(summary.target_group || run.target_group)}`;
   summaryElement.innerHTML = [
+    metric('模型 / 类型', modelText),
     metric('扫描股票', formatNumber(summary.scan_code_count ?? run.scan_code_count)),
     metric('成功 / 失败', `${formatNumber(summary.success_code_count ?? run.success_code_count)} / ${formatNumber(summary.failure_code_count ?? run.failure_code_count)}`),
     metric('候选总数', formatNumber(summary.candidate_count ?? run.candidate_count)),
     metric('过滤后', formatNumber(summary.filtered_count ?? run.filtered_count)),
     metric('买 / 卖候选', `${formatNumber(summary.buy_candidate_count ?? run.buy_candidate_count)} / ${formatNumber(summary.sell_candidate_count ?? run.sell_candidate_count)}`),
-    metric('最近K线', formatNumber(summary.recent_bars ?? run.recent_bars)),
+    metric('目标', targetTypesLabel(summary.target_bsp_types ?? run.target_bsp_types)),
     metric('最小概率', formatPct(data.filters ? data.filters.min_prob : summary.min_prob)),
     metric('运行ID', `#${run.id || '-'}`),
   ].join('');
@@ -160,10 +188,12 @@ function renderSignals(signals) {
   signalsBodyElement.innerHTML = signals.map(signal => {
     const sideClass = signal.signal_side === 'buy' ? 'buy' : 'sell';
     const sideText = signal.signal_side === 'buy' ? '买' : '卖';
+    const modelText = `${targetGroupLabel(signal.target_group)} ${signal.target_bsp_types || ''}`.trim();
     return `<tr>
       <td><a class="chart-link stock-name" href="${signal.chart_url}" target="_blank" rel="noopener"><span>${signal.name || signal.code}</span><span class="stock-code">${signal.code}</span></a></td>
       <td>${signal.industry || '-'}</td>
       <td><span class="side ${sideClass}">${sideText}</span></td>
+      <td><span class="model-tag" title="${signal.model_name || ''}">${modelText || '-'}</span></td>
       <td>${signal.open_time}</td>
       <td class="prob">${formatPct(signal.probability)}</td>
       <td>${formatNumber(signal.price, 2)}</td>
