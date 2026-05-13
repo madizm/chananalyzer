@@ -233,6 +233,8 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
         "x_range": req.x_range,
     }
     payload["probabilityMarkers"] = []
+    payload["firstProbabilityMarkers"] = []
+    payload["secondProbabilityMarkers"] = []
     try:
         probability_payload = build_bsp_probability_payload(
             code=req.code,
@@ -244,10 +246,23 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
         )
         payload["probabilityModel"] = {key: value for key, value in probability_payload.items() if key != "markers"}
         payload["probabilityMarkers"] = probability_payload.get("markers", [])
-        if payload["probabilityMarkers"]:
+        payload["firstProbabilityMarkers"] = [
+            marker for marker in payload["probabilityMarkers"]
+            if marker.get("labelGroup") == "first"
+        ]
+        payload["secondProbabilityMarkers"] = [
+            marker for marker in payload["probabilityMarkers"]
+            if marker.get("labelGroup") == "second"
+        ]
+        if payload["firstProbabilityMarkers"]:
             payload["legend"].extend([
                 {"label": "一买概率", "color": "#b91c1c"},
                 {"label": "一卖概率", "color": "#15803d"},
+            ])
+        if payload["secondProbabilityMarkers"]:
+            payload["legend"].extend([
+                {"label": "二买概率", "color": "#b91c1c"},
+                {"label": "二卖概率", "color": "#15803d"},
             ])
     except Exception as exc:
         payload["probabilityModel"] = {

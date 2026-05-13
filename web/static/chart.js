@@ -209,7 +209,8 @@ function drawPayload(chart) {
   if (layerState.zs) drawRectangles(chart, payload.zs, { color: '#fb8c00', background: '#ffedd5', lineWidth: 2, lineStyle: 0, transparency: 86, zOrder: 'bottom' });
   if (layerState.mean) drawMeanLines(chart, payload.mean);
   if (layerState.bsp) drawMarkers(chart, payload.bspMarkers);
-  if (layerState.probability) drawMarkers(chart, payload.probabilityMarkers || []);
+  if (layerState.firstProbability) drawMarkers(chart, payload.firstProbabilityMarkers || []);
+  if (layerState.secondProbability) drawMarkers(chart, payload.secondProbabilityMarkers || []);
   if (layerState.marker) drawMarkers(chart, payload.customMarkers);
 }
 
@@ -245,7 +246,8 @@ function setupLayers() {
     { key: 'zs', label: '中枢', color: '#fb8c00', available: payload.zs && payload.zs.length > 0 },
     { key: 'mean', label: '均线', color: '#5e35b1', available: payload.mean && payload.mean.length > 0 },
     { key: 'bsp', label: '买卖点', color: '#d32f2f', available: payload.bspMarkers && payload.bspMarkers.length > 0 },
-    { key: 'probability', label: '一类概率', color: '#b91c1c', available: payload.probabilityMarkers && payload.probabilityMarkers.length > 0 },
+    { key: 'firstProbability', label: '一类概率', color: '#b91c1c', available: payload.firstProbabilityMarkers && payload.firstProbabilityMarkers.length > 0 },
+    { key: 'secondProbability', label: '二类概率', color: '#dc2626', available: payload.secondProbabilityMarkers && payload.secondProbabilityMarkers.length > 0 },
     { key: 'marker', label: '标记', color: '#1e88e5', available: payload.customMarkers && payload.customMarkers.length > 0 },
   ].filter(item => item.available);
   layerState = Object.fromEntries(controlSpecs.map(item => [item.key, true]));
