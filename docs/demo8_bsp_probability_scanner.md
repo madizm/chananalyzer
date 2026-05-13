@@ -1,6 +1,6 @@
-# 30M 一类买卖点概率选股说明
+# 30M 买卖点概率选股说明
 
-本文档说明 `Debug/scan_demo8_bsp_probability.py` 这套选股程序的核心思想、缠论依据、模型使用方式，以及选股结果如何解释。
+本文档说明 `Debug/scan_bsp_probability.py` 统一入口，以及 `Debug/scan_demo8_bsp_probability.py`、`Debug/scan_demo9_bsp_probability.py` 单模型入口的核心思想、缠论依据、模型使用方式，以及选股结果如何解释。
 
 ## 1. 程序定位
 
@@ -192,12 +192,14 @@ DAY 父级别用于描述大环境。模型特征中会包含父级别的涨跌�
 
 默认写入 `chan.db`，可通过 `--db-path` 指定。
 
-专用表：
+新扫描结果统一写入通用表：
 
-- `demo8_bsp_probability_scan_runs`
-- `demo8_bsp_probability_scan_signals`
+- `bsp_probability_scan_runs`
+- `bsp_probability_scan_signals`
 
-运行表记录扫描参数和汇总。信号表记录每条候选买卖点的概率、阈值命中和关键特征。
+运行表记录扫描参数和汇总。信号表记录每条候选买卖点的概率、阈值命中，并通过 `feature_snapshot_json` 保存解释特征。
+
+旧版本曾写入过模型专用表，例如 `demo8_bsp_probability_scan_*` 和 `demo9_bsp_probability_scan_*`。这些旧表保留历史数据，新版本不再继续写入。
 
 如果不希望写数据库，可以使用：
 
@@ -206,6 +208,14 @@ python Debug\scan_demo8_bsp_probability.py --no-save-db
 ```
 
 ## 9. 常用命令
+
+统一扫描一类和二类近期信号：
+
+```powershell
+python Debug\scan_bsp_probability.py --target-group first,second --all --begin-time 2026-04-01 --end-time 2026-05-10 --recent-bars 48 --min-prob 0.6 --workers 4 --output-dir Debug\model_output\bsp_probability_scan
+```
+
+统一入口会在总输出目录下生成合并版 `signals_all.csv`、`signals_filtered.csv`、`summary.json`，同时在 `first/`、`second/` 子目录保留各自的扫描结果。数据库仍写入同一组通用表，并用 `model_name`、`target_group` 区分一类、二类信号。
 
 扫描全市场最近信号：
 
@@ -259,4 +269,3 @@ python Debug\scan_demo8_bsp_probability.py --codes 000001,000002 --begin-time 20
 - 对高分失败样本继续做特征复盘，形成后置过滤规则。
 - 分行情阶段维护不同阈值。
 - 训练二类、三类买卖点模型，和当前一类模型形成多信号体系。
-
