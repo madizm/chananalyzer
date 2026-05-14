@@ -68,6 +68,7 @@ python docs/tdx_api/tdxdata_test.py --dll-path D:\tdx_new\PYPlugins\TPythClient.
 - `tq.initialize(path, dll_path="")`: 初始化连接。所有接口调用前必须先执行。
 - `tq.close()`: 断开连接。建议放在 `finally` 中。
 - `tq.get_market_data(...)`: 获取 K 线，返回 `{字段名: DataFrame}`；DataFrame 的 index 是时间，columns 是股票代码。
+- `tq.get_market_snapshot(stock_code, field_list=[])`: 获取指定证券最新行情快照。
 - `tq.get_more_info(stock_code, field_list=[])`: 获取涨跌停、资金流、估值、事件等扩展字段。
 - `tq.get_stock_info(stock_code, field_list=[])`: 获取基础证券信息和基础财务字段。
 - `tq.get_stock_list(market="5", list_type=0)`: 获取股票/基金/板块等列表。
@@ -94,6 +95,8 @@ python docs/tdx_api/tdxdata_test.py --dll-path D:\tdx_new\PYPlugins\TPythClient.
 - `docs/tdx_api/06_user_sector.md`
 - `docs/tdx_api/07_get_stock_list_in_sector.md`
 - `docs/tdx_api/08_concept_sector_schema.md`
+- `docs/tdx_api/09_subscribe_quote_breakout_alert.md`
+- `docs/tdx_api/10_get_market_snapshot.md`
 
 ## Sources
 
@@ -104,3 +107,5 @@ python docs/tdx_api/tdxdata_test.py --dll-path D:\tdx_new\PYPlugins\TPythClient.
 - https://help.tdx.com.cn/quant/docs/markdown/mindoc-1h12t4q6fg29o.html
 - https://help.tdx.com.cn/quant/docs/markdown/mindoc-1h139a4ckchkk/
 - https://help.tdx.com.cn/quant/docs/markdown/mindoc-1ctuhttn72svo/mindoc-1h10r92mchgug.html
+- https://help.tdx.com.cn/quant/docs/markdown/mindoc-1h1525ci3mnkc/mindoc-1h1526nmnk5n4.html
+- https://help.tdx.com.cn/quant/docs/markdown/mindoc-1ctuhthaq5qmg/mindoc-1h10iig4pb6e0.html
