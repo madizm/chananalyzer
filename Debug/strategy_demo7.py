@@ -85,6 +85,13 @@ class SignalSample:
     max_gain: Optional[float] = None
     max_drawdown: Optional[float] = None
     exit_reason: Optional[str] = None
+    signal_time: Optional[str] = None
+    decision_time: Optional[str] = None
+    bi_begin_time: Optional[str] = None
+    bi_end_time: Optional[str] = None
+    bi_direction: Optional[str] = None
+    label_mode: Optional[str] = None
+    label_source: Optional[str] = None
 
 
 def ctime_to_str(ctime_obj) -> str:

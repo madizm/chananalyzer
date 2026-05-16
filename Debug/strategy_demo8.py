@@ -68,6 +68,7 @@ from Debug.strategy_demo7 import (
     write_feature_importance,
     write_libsvm,
 )
+from Debug.bsp_point_in_time_label import collect_point_in_time_samples_for_code
 
 
 def signal_side_is_buy(signal_side: str) -> bool:
@@ -86,9 +87,11 @@ def label_target_name(target_is_buy: bool) -> str:
     return "confirmed_bi_is_target_buy_point" if target_is_buy else "confirmed_bi_is_target_sell_point"
 
 
-def label_definition_text(target_is_buy: bool) -> str:
+def label_definition_text(target_is_buy: bool, label_mode: str = "point_in_time") -> str:
     bi_name = signal_side_bi_name(target_is_buy)
     point_name = signal_side_point_name(target_is_buy)
+    if label_mode == "point_in_time":
+        return f"1 表示确认{bi_name}在 decision_time 当时可见结构中存在目标{point_name}(1/1p)，0 表示当时可见结构中不是目标{point_name}。"
     return f"1 表示确认{bi_name}最终存在目标{point_name}(1/1p)，0 表示确认{bi_name}不是目标{point_name}。"
 
 
@@ -236,12 +239,51 @@ def latest_previous_bsp(sorted_bsp_list: List, bi_idx: int):
     return previous_bsp
 
 
+def point_in_time_feature_builder(
+    final_klus: List,
+    pos: int,
+    bi,
+    target_is_buy: bool,
+    sorted_bsp_list: List,
+    parent_context=None,
+    child_level_chan=None,
+) -> Dict[str, float]:
+    return confirmed_bi_feature(
+        final_klus,
+        pos,
+        bi,
+        target_is_buy,
+        latest_previous_bsp(sorted_bsp_list, bi.idx),
+        parent_context,
+        child_level_chan,
+    )
+
+
 def collect_confirmed_bi_samples_for_code(
     code: str,
     begin_time: str,
     end_time: Optional[str],
     target_is_buy: bool,
+    label_mode: str = "point_in_time",
+    decision_delay_bars: int = 0,
 ) -> Tuple[str, List[SignalSample]]:
+    if label_mode == "point_in_time":
+        point_name = "buy_point" if target_is_buy else "sell_point"
+        return collect_point_in_time_samples_for_code(
+            code=code,
+            begin_time=begin_time,
+            end_time=end_time,
+            target_is_buy=target_is_buy,
+            target_bsp_types=set(TARGET_BSP_TYPES),
+            build_chan_fn=build_chan,
+            feature_builder=point_in_time_feature_builder,
+            exit_reason_positive=f"correct_{point_name}",
+            exit_reason_negative=f"not_{point_name}",
+            decision_delay_bars=decision_delay_bars,
+        )
+    if label_mode != "final":
+        raise ValueError(f"不支持的 label_mode: {label_mode}")
+
     parent_dates, parent_context_by_date = build_parent_level_context(code, begin_time, end_time)
     chan = build_chan(code, begin_time, end_time)
     for _ in chan.step_load():
@@ -291,6 +333,13 @@ def collect_confirmed_bi_samples_for_code(
                 child_level_chan,
             ),
             label=1 if bsp is not None else 0,
+            signal_time=ctime_to_str(entry_klu.time),
+            decision_time=ctime_to_str(entry_klu.time),
+            bi_begin_time=ctime_to_str(bi.get_begin_klu().time),
+            bi_end_time=ctime_to_str(entry_klu.time),
+            bi_direction="down" if bi.is_down() else "up",
+            label_mode="final",
+            label_source="final_structure",
         )
         point_name = "buy_point" if target_is_buy else "sell_point"
         sample.exit_reason = f"correct_{point_name}" if sample.label == 1 else f"not_{point_name}"
@@ -316,6 +365,8 @@ def collect_confirmed_bi_samples(
     end_time: Optional[str],
     signal_workers: int,
     target_is_buy: bool,
+    label_mode: str = "point_in_time",
+    decision_delay_bars: int = 0,
 ) -> List[SignalSample]:
     worker_count = resolve_signal_workers(signal_workers, len(codes))
     samples_by_code: Dict[str, List[SignalSample]] = {}
@@ -324,7 +375,14 @@ def collect_confirmed_bi_samples(
     if worker_count == 1:
         for code in codes:
             try:
-                _, code_samples = collect_confirmed_bi_samples_for_code(code, begin_time, end_time, target_is_buy)
+                _, code_samples = collect_confirmed_bi_samples_for_code(
+                    code,
+                    begin_time,
+                    end_time,
+                    target_is_buy,
+                    label_mode,
+                    decision_delay_bars,
+                )
                 samples_by_code[code] = code_samples
                 print(f"{code}: 确认{bi_name}样本 {len(code_samples)}")
             except Exception as err:
@@ -333,7 +391,15 @@ def collect_confirmed_bi_samples(
         print(f"并行生成确认笔样本: workers={worker_count}, codes={len(codes)}")
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
             future_to_code = {
-                executor.submit(collect_confirmed_bi_samples_for_code, code, begin_time, end_time, target_is_buy): code
+                executor.submit(
+                    collect_confirmed_bi_samples_for_code,
+                    code,
+                    begin_time,
+                    end_time,
+                    target_is_buy,
+                    label_mode,
+                    decision_delay_bars,
+                ): code
                 for code in codes
             }
             for future in as_completed(future_to_code):
@@ -441,6 +507,7 @@ def train_correctness_model(
     random_state: int,
     score_thresholds: List[float],
     target_is_buy: bool,
+    label_mode: str = "point_in_time",
 ):
     x_train = build_matrix(train_samples, feature_meta)
     y_train = [int(sample.label) for sample in train_samples]
@@ -478,7 +545,7 @@ def train_correctness_model(
         "score_buckets": score_buckets,
         "score_thresholds": summarize_score_thresholds(test_prob, test_samples, score_thresholds),
         "time_period_metrics": summarize_time_period_metrics(test_prob, test_samples),
-        "label_definition": label_definition_text(target_is_buy),
+        "label_definition": label_definition_text(target_is_buy, label_mode),
     }
     return model, metrics, test_prob
 
@@ -492,6 +559,7 @@ def run_walk_forward_validation(
     score_thresholds: List[float],
     target_is_buy: bool,
     min_test_time: Optional[str] = None,
+    label_mode: str = "point_in_time",
 ) -> List[Dict]:
     sorted_samples = sorted(samples, key=lambda sample: (sample.open_time, sample.code, sample.open_klu_idx))
     rows = []
@@ -542,6 +610,7 @@ def run_walk_forward_validation(
             random_state,
             score_thresholds,
             target_is_buy,
+            label_mode,
         )
         window_metrics.pop("time_period_metrics", None)
         row.update(window_metrics)
@@ -558,11 +627,18 @@ def write_samples_csv(path: Path, samples: List[SignalSample], score_by_key: Opt
             fid,
             fieldnames=[
                 "open_time",
+                "decision_time",
+                "signal_time",
                 "code",
                 "open_klu_idx",
                 "bsp_klu_idx",
+                "bi_begin_time",
+                "bi_end_time",
+                "bi_direction",
                 "entry_price",
                 "label",
+                "label_mode",
+                "label_source",
                 "score",
                 "exit_reason",
             ],
@@ -571,11 +647,18 @@ def write_samples_csv(path: Path, samples: List[SignalSample], score_by_key: Opt
         for sample in samples:
             writer.writerow({
                 "open_time": sample.open_time,
+                "decision_time": sample.decision_time,
+                "signal_time": sample.signal_time,
                 "code": sample.code,
                 "open_klu_idx": sample.open_klu_idx,
                 "bsp_klu_idx": sample.bsp_klu_idx,
+                "bi_begin_time": sample.bi_begin_time,
+                "bi_end_time": sample.bi_end_time,
+                "bi_direction": sample.bi_direction,
                 "entry_price": sample.entry_price,
                 "label": sample.label,
+                "label_mode": sample.label_mode,
+                "label_source": sample.label_source,
                 "score": score_by_key.get((sample.code, sample.open_klu_idx)),
                 "exit_reason": sample.exit_reason,
             })
@@ -596,7 +679,10 @@ def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict
         "end_time": args.end_time,
         "signal_side": args.signal_side,
         "label_target": label_target_name(target_is_buy),
-        "label_definition": label_definition_text(target_is_buy),
+        "label_mode": args.label_mode,
+        "label_source": "as_of_replay" if args.label_mode == "point_in_time" else "final_structure",
+        "label_definition": label_definition_text(target_is_buy, args.label_mode),
+        "label_decision_delay_bars": args.decision_delay_bars,
         "target_bsp_types": sorted(TARGET_BSP_TYPES),
         "main_bs_type": "1,1p",
         "data_src": "CACHE_DB",
@@ -640,6 +726,8 @@ def parse_args():
     parser.add_argument("--walk-forward-min-train-samples", type=int, default=100)
     parser.add_argument("--walk-forward-min-test-samples", type=int, default=50)
     parser.add_argument("--signal-workers", type=int, default=0)
+    parser.add_argument("--label-mode", choices=["point_in_time", "final"], default="point_in_time", help="point_in_time 使用当时可见结构贴标签；final 使用完整区间最终结构贴标签。")
+    parser.add_argument("--decision-delay-bars", type=int, default=0, help="point_in_time 模式下，候选笔结束后至少等待 N 根30M K线再采样。")
     parser.add_argument("--output-dir", default=None)
     return parser.parse_args()
 
@@ -647,9 +735,11 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     target_is_buy = signal_side_is_buy(args.signal_side)
-    default_output_dir = "Debug/model_output/strategy_demo8" if target_is_buy else "Debug/model_output/strategy_demo8_sell"
+    default_output_dir = "Debug/model_output/strategy_demo8_buy" if target_is_buy else "Debug/model_output/strategy_demo8_sell"
     output_dir = Path(args.output_dir or default_output_dir)
     bi_name = signal_side_bi_name(target_is_buy)
+    if args.decision_delay_bars < 0:
+        raise ValueError("--decision-delay-bars 不能小于 0")
 
     if args.all:
         codes = get_stock_list_from_cache(DB_KL_TYPE)
@@ -659,7 +749,15 @@ if __name__ == "__main__":
     else:
         codes = parse_code_list(args.codes or args.code)
 
-    samples = collect_confirmed_bi_samples(codes, args.begin_time, args.end_time, args.signal_workers, target_is_buy)
+    samples = collect_confirmed_bi_samples(
+        codes,
+        args.begin_time,
+        args.end_time,
+        args.signal_workers,
+        target_is_buy,
+        args.label_mode,
+        args.decision_delay_bars,
+    )
     if not samples:
         raise ValueError(f"没有生成任何确认{bi_name}样本，请检查数据源连接、股票代码或时间范围。")
     if len(samples) < 20:
@@ -678,11 +776,16 @@ if __name__ == "__main__":
         args.random_state,
         score_thresholds,
         target_is_buy,
+        args.label_mode,
     )
     metrics.update({
         "kl_type": DB_KL_TYPE,
         "parent_kl_type": PARENT_DB_KL_TYPE,
         "child_kl_type": CHILD_DB_KL_TYPE,
+        "label_mode": args.label_mode,
+        "label_source": "as_of_replay" if args.label_mode == "point_in_time" else "final_structure",
+        "label_decision_delay_bars": args.decision_delay_bars,
+        "label_target_bsp_types": sorted(TARGET_BSP_TYPES),
         "split_mode": split_info["mode"],
         "split_time": split_info["split_time"],
         "train_period": split_info["train_period"],
@@ -704,6 +807,7 @@ if __name__ == "__main__":
             score_thresholds,
             target_is_buy,
             split_info["split_time"],
+            args.label_mode,
         )
 
     feature_importance = get_feature_importance(model, feature_meta)

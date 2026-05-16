@@ -189,12 +189,14 @@ function renderSignals(signals) {
     const sideClass = signal.signal_side === 'buy' ? 'buy' : 'sell';
     const sideText = signal.signal_side === 'buy' ? '买' : '卖';
     const modelText = `${targetGroupLabel(signal.target_group)} ${signal.target_bsp_types || ''}`.trim();
+    const signalTime = signal.signal_time || signal.open_time || '-';
+    const decisionTime = signal.decision_time || signal.open_time || '-';
     return `<tr>
       <td><a class="chart-link stock-name" href="${signal.chart_url}" target="_blank" rel="noopener"><span>${signal.name || signal.code}</span><span class="stock-code">${signal.code}</span></a></td>
       <td>${signal.industry || '-'}</td>
       <td><span class="side ${sideClass}">${sideText}</span></td>
       <td><span class="model-tag" title="${signal.model_name || ''}">${modelText || '-'}</span></td>
-      <td>${signal.open_time}</td>
+      <td title="decision: ${decisionTime}">${signalTime}</td>
       <td class="prob">${formatPct(signal.probability)}</td>
       <td>${formatNumber(signal.price, 2)}</td>
       <td>${signal.bi_idx}</td>

@@ -121,6 +121,15 @@ def threshold_hit_fields(probability: float, thresholds: List[float]) -> Dict[st
     }
 
 
+def load_model_bundles(signal_sides: List[str], buy_model_dir: str, sell_model_dir: str) -> Dict[str, Tuple[object, Dict[str, int], str]]:
+    model_bundles = {}
+    if "buy" in signal_sides:
+        model_bundles["buy"] = (*load_model_bundle(Path(buy_model_dir)), str(Path(buy_model_dir)))
+    if "sell" in signal_sides:
+        model_bundles["sell"] = (*load_model_bundle(Path(sell_model_dir)), str(Path(sell_model_dir)))
+    return model_bundles
+
+
 def build_scan_chan(config: BspProbabilityScanConfig, code: str, begin_time: str, end_time: Optional[str]):
     if config.model_name == "demo8":
         return build_chan(code, begin_time, end_time)
@@ -165,8 +174,90 @@ def build_scan_feature(
             previous_first_bsp,
             parent_context,
             child_level_chan,
-        )
+    )
     raise ValueError(f"不支持的模型扫描配置：{config.model_name}")
+
+
+def score_chan_candidates(
+    *,
+    config: BspProbabilityScanConfig,
+    chan,
+    code: str,
+    parent_dates: List[str],
+    parent_context_by_date: Dict[str, Dict[str, float]],
+    signal_sides: List[str],
+    min_prob: float,
+    recent_bars: int,
+    thresholds: List[float],
+    model_bundles: Dict[str, Tuple[object, Dict[str, int], str]],
+) -> List[Dict]:
+    level_chan = chan[MODEL_LV_IDX]
+    child_level_chan = chan[CHILD_LV_IDX]
+    final_klus = list(level_chan.klu_iter())
+    decision_time = ctime_to_str(final_klus[-1].time) if final_klus else None
+    pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
+    sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
+    recent_min_klu_idx = None
+    if recent_bars > 0 and final_klus:
+        recent_min_klu_idx = int(final_klus[max(0, len(final_klus) - recent_bars)].idx)
+
+    rows: List[Dict] = []
+    for signal_side in signal_sides:
+        target_is_buy = signal_side == "buy"
+        model, feature_meta, model_dir = model_bundles[signal_side]
+        for bi in level_chan.bi_list:
+            if not bi.is_sure or not bi_matches_signal_side(bi, target_is_buy):
+                continue
+
+            entry_klu = bi.get_end_klu()
+            if recent_min_klu_idx is not None and int(entry_klu.idx) < recent_min_klu_idx:
+                continue
+
+            pos = pos_by_idx.get(int(entry_klu.idx))
+            if pos is None:
+                continue
+
+            entry_date = ctime_to_date_str(entry_klu.time)
+            parent_pos = bisect_left(parent_dates, entry_date) - 1
+            parent_context = parent_context_by_date[parent_dates[parent_pos]] if parent_pos >= 0 else None
+            feature = build_scan_feature(
+                config,
+                final_klus,
+                pos,
+                bi,
+                target_is_buy,
+                sorted_bsp_list,
+                parent_context,
+                child_level_chan,
+            )
+            probability = predict_probability(model, feature_meta, feature)
+            feature_snapshot = {
+                feature_name: feature.get(feature_name)
+                for feature_name in config.feature_names
+            }
+            row = {
+                "model_name": config.model_name,
+                "target_group": config.target_group,
+                "target_bsp_types": ",".join(config.target_bsp_types),
+                "code": code,
+                "signal_side": signal_side,
+                "open_time": ctime_to_str(entry_klu.time),
+                "signal_time": ctime_to_str(entry_klu.time),
+                "decision_time": decision_time,
+                "bi_idx": int(bi.idx),
+                "klu_idx": int(entry_klu.idx),
+                "price": float(entry_klu.close),
+                "probability": probability,
+                "hit_min_prob": probability >= min_prob,
+                "feature_snapshot": feature_snapshot,
+                "model_dir": model_dir,
+            }
+            row.update(threshold_hit_fields(probability, thresholds))
+            row.update(feature_snapshot)
+            rows.append(row)
+
+    rows.sort(key=lambda item: (-float(item["probability"]), item["open_time"], item["code"], item["signal_side"]))
+    return rows
 
 
 def scan_code(
@@ -182,80 +273,23 @@ def scan_code(
     sell_model_dir: str,
 ) -> Tuple[str, List[Dict], Optional[str]]:
     try:
-        model_bundles = {}
-        if "buy" in signal_sides:
-            model_bundles["buy"] = (*load_model_bundle(Path(buy_model_dir)), str(Path(buy_model_dir)))
-        if "sell" in signal_sides:
-            model_bundles["sell"] = (*load_model_bundle(Path(sell_model_dir)), str(Path(sell_model_dir)))
-
+        model_bundles = load_model_bundles(signal_sides, buy_model_dir, sell_model_dir)
         parent_dates, parent_context_by_date = build_parent_level_context(code, begin_time, end_time)
         chan = build_scan_chan(config, code, begin_time, end_time)
         for _ in chan.step_load():
             pass
-
-        level_chan = chan[MODEL_LV_IDX]
-        child_level_chan = chan[CHILD_LV_IDX]
-        final_klus = list(level_chan.klu_iter())
-        pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
-        sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
-        recent_min_klu_idx = None
-        if recent_bars > 0 and final_klus:
-            recent_min_klu_idx = int(final_klus[max(0, len(final_klus) - recent_bars)].idx)
-
-        rows: List[Dict] = []
-        for signal_side in signal_sides:
-            target_is_buy = signal_side == "buy"
-            model, feature_meta, model_dir = model_bundles[signal_side]
-            for bi in level_chan.bi_list:
-                if not bi.is_sure or not bi_matches_signal_side(bi, target_is_buy):
-                    continue
-
-                entry_klu = bi.get_end_klu()
-                if recent_min_klu_idx is not None and int(entry_klu.idx) < recent_min_klu_idx:
-                    continue
-
-                pos = pos_by_idx.get(int(entry_klu.idx))
-                if pos is None:
-                    continue
-
-                entry_date = ctime_to_date_str(entry_klu.time)
-                parent_pos = bisect_left(parent_dates, entry_date) - 1
-                parent_context = parent_context_by_date[parent_dates[parent_pos]] if parent_pos >= 0 else None
-                feature = build_scan_feature(
-                    config,
-                    final_klus,
-                    pos,
-                    bi,
-                    target_is_buy,
-                    sorted_bsp_list,
-                    parent_context,
-                    child_level_chan,
-                )
-                probability = predict_probability(model, feature_meta, feature)
-                feature_snapshot = {
-                    feature_name: feature.get(feature_name)
-                    for feature_name in config.feature_names
-                }
-                row = {
-                    "model_name": config.model_name,
-                    "target_group": config.target_group,
-                    "target_bsp_types": ",".join(config.target_bsp_types),
-                    "code": code,
-                    "signal_side": signal_side,
-                    "open_time": ctime_to_str(entry_klu.time),
-                    "bi_idx": int(bi.idx),
-                    "klu_idx": int(entry_klu.idx),
-                    "price": float(entry_klu.close),
-                    "probability": probability,
-                    "hit_min_prob": probability >= min_prob,
-                    "feature_snapshot": feature_snapshot,
-                    "model_dir": model_dir,
-                }
-                row.update(threshold_hit_fields(probability, thresholds))
-                row.update(feature_snapshot)
-                rows.append(row)
-
-        rows.sort(key=lambda item: (-float(item["probability"]), item["open_time"], item["code"], item["signal_side"]))
+        rows = score_chan_candidates(
+            config=config,
+            chan=chan,
+            code=code,
+            parent_dates=parent_dates,
+            parent_context_by_date=parent_context_by_date,
+            signal_sides=signal_sides,
+            min_prob=min_prob,
+            recent_bars=recent_bars,
+            thresholds=thresholds,
+            model_bundles=model_bundles,
+        )
         return code, rows, None
     except Exception as exc:
         return code, [], str(exc)
@@ -280,6 +314,8 @@ def write_csv(path: Path, rows: List[Dict], thresholds: List[float], feature_nam
         "code",
         "signal_side",
         "open_time",
+        "signal_time",
+        "decision_time",
         "bi_idx",
         "klu_idx",
         "price",
@@ -342,6 +378,8 @@ def init_scan_db(conn: sqlite3.Connection) -> None:
             code TEXT NOT NULL,
             signal_side TEXT NOT NULL,
             open_time TEXT NOT NULL,
+            signal_time TEXT,
+            decision_time TEXT,
             bi_idx INTEGER NOT NULL,
             klu_idx INTEGER NOT NULL,
             price REAL NOT NULL,
@@ -369,6 +407,18 @@ def init_scan_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_bsp_prob_signals_probability
             ON bsp_probability_scan_signals(probability);
         """
+    )
+    existing_columns = {
+        row[1]
+        for row in conn.execute(f"PRAGMA table_info(bsp_probability_scan_signals)").fetchall()
+    }
+    if "signal_time" not in existing_columns:
+        conn.execute("ALTER TABLE bsp_probability_scan_signals ADD COLUMN signal_time TEXT")
+    if "decision_time" not in existing_columns:
+        conn.execute("ALTER TABLE bsp_probability_scan_signals ADD COLUMN decision_time TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bsp_prob_signals_decision_time "
+        "ON bsp_probability_scan_signals(decision_time)"
     )
     conn.commit()
 
@@ -474,6 +524,8 @@ def save_scan_to_db(
                 row["code"],
                 row["signal_side"],
                 row["open_time"],
+                row.get("signal_time") or row["open_time"],
+                row.get("decision_time") or row["open_time"],
                 int(row["bi_idx"]),
                 int(row["klu_idx"]),
                 float(row["price"]),
@@ -488,9 +540,9 @@ def save_scan_to_db(
             """
             INSERT INTO bsp_probability_scan_signals (
                 run_id, model_name, target_group, target_bsp_types, code, signal_side,
-                open_time, bi_idx, klu_idx, price, probability, hit_min_prob,
+                open_time, signal_time, decision_time, bi_idx, klu_idx, price, probability, hit_min_prob,
                 threshold_hits, feature_snapshot_json, model_dir, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             signal_rows,
         )

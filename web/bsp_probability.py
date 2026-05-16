@@ -15,8 +15,10 @@ from Debug.strategy_demo7 import (
     build_chan as build_first_chan,
     build_parent_level_context,
     ctime_to_date_str,
+    ctime_to_str,
     normalize_cache_code,
 )
+from Debug.bsp_point_in_time_label import bi_direction_text, sample_key
 from Debug.strategy_demo8 import (
     bi_matches_signal_side,
     confirmed_bi_feature,
@@ -105,7 +107,17 @@ def _price_span(bars: List[Dict[str, Any]]) -> float:
     return max(max_price - min_price, max(abs(max_price), 1.0) * 0.03)
 
 
-def _marker_payload(*, klu, probability: float, signal_side: str, label_group: str, price_span: float) -> Dict[str, Any]:
+def _marker_payload(
+    *,
+    klu,
+    decision_klu,
+    bi,
+    probability: float,
+    signal_side: str,
+    label_group: str,
+    price_span: float,
+    model_dir: str,
+) -> Dict[str, Any]:
     is_buy = signal_side == "buy"
     price = float(klu.low if is_buy else klu.high)
     label_offset = 0.07 if label_group == "first" else 0.105
@@ -125,6 +137,21 @@ def _marker_payload(*, klu, probability: float, signal_side: str, label_group: s
         "signalSide": signal_side,
         "labelGroup": label_group,
         "targetTypes": MODEL_GROUPS[label_group]["target_types"],
+        "signalTime": klu.time.to_str(),
+        "decisionTime": decision_klu.time.to_str(),
+        "biBeginTime": ctime_to_str(bi.get_begin_klu().time),
+        "biEndTime": ctime_to_str(bi.get_end_klu().time),
+        "biDirection": bi_direction_text(bi),
+        "labelMode": "point_in_time",
+        "labelSource": "as_of_replay",
+        "scoringMode": "point_in_time_replay",
+        "modelDir": model_dir,
+        "tooltip": (
+            f"{MODEL_GROUPS[label_group]['name']} {MODEL_GROUPS[label_group]['target_types']} "
+            f"{'买' if is_buy else '卖'}点概率 {probability:.1%}; "
+            f"signal={klu.time.to_str()}; decision={decision_klu.time.to_str()}; "
+            "label=point-in-time"
+        ),
         "rawTime": klu.time.to_str(),
     }
 
@@ -138,97 +165,117 @@ def _parent_context(parent_dates, parent_context_by_date, entry_klu):
 def _scan_first_group(code: str, begin: str, end: Optional[str], price_span: float, visible_from, visible_to):
     parent_dates, parent_context_by_date = build_parent_level_context(code, begin, end)
     chan = build_first_chan(code, begin, end)
-    for _ in chan.step_load():
-        pass
-
-    level_chan = chan[MODEL_LV_IDX]
-    child_level_chan = chan[CHILD_LV_IDX]
-    final_klus = list(level_chan.klu_iter())
-    pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
-    sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
     markers: List[Dict[str, Any]] = []
     loaded_model_dirs: Dict[str, str] = {}
+    seen = set()
 
-    for signal_side, target_is_buy in (("buy", True), ("sell", False)):
-        for bi in level_chan.bi_list:
-            if not bi.is_sure or not bi_matches_signal_side(bi, target_is_buy):
-                continue
-            entry_klu = bi.get_end_klu()
-            marker_time = int(entry_klu.time.ts)
-            if visible_from is not None and marker_time < visible_from:
-                continue
-            if visible_to is not None and marker_time > visible_to:
-                continue
-            pos = pos_by_idx.get(int(entry_klu.idx))
-            if pos is None:
-                continue
-            feature = confirmed_bi_feature(
-                final_klus,
-                pos,
-                bi,
-                target_is_buy,
-                latest_previous_bsp(sorted_bsp_list, bi.idx),
-                _parent_context(parent_dates, parent_context_by_date, entry_klu),
-                child_level_chan,
-            )
-            probability, model_dir = _predict_probability("first", signal_side, feature)
-            loaded_model_dirs[signal_side] = model_dir
-            markers.append(_marker_payload(
-                klu=entry_klu,
-                probability=probability,
-                signal_side=signal_side,
-                label_group="first",
-                price_span=price_span,
-            ))
+    for snapshot in chan.step_load():
+        level_chan = snapshot[MODEL_LV_IDX]
+        child_level_chan = snapshot[CHILD_LV_IDX]
+        final_klus = list(level_chan.klu_iter())
+        if not final_klus:
+            continue
+        decision_klu = final_klus[-1]
+        pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
+        sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
+
+        for signal_side, target_is_buy in (("buy", True), ("sell", False)):
+            for bi in level_chan.bi_list:
+                if not bi.is_sure or not bi_matches_signal_side(bi, target_is_buy):
+                    continue
+                key = sample_key(code, signal_side, bi)
+                if key in seen:
+                    continue
+                entry_klu = bi.get_end_klu()
+                pos = pos_by_idx.get(int(entry_klu.idx))
+                if pos is None:
+                    continue
+                seen.add(key)
+                marker_time = int(entry_klu.time.ts)
+                if visible_from is not None and marker_time < visible_from:
+                    continue
+                if visible_to is not None and marker_time > visible_to:
+                    continue
+                feature = confirmed_bi_feature(
+                    final_klus,
+                    pos,
+                    bi,
+                    target_is_buy,
+                    latest_previous_bsp(sorted_bsp_list, bi.idx),
+                    _parent_context(parent_dates, parent_context_by_date, entry_klu),
+                    child_level_chan,
+                )
+                probability, model_dir = _predict_probability("first", signal_side, feature)
+                loaded_model_dirs[signal_side] = model_dir
+                markers.append(_marker_payload(
+                    klu=entry_klu,
+                    decision_klu=decision_klu,
+                    bi=bi,
+                    probability=probability,
+                    signal_side=signal_side,
+                    label_group="first",
+                    price_span=price_span,
+                    model_dir=model_dir,
+                ))
     return markers, loaded_model_dirs
 
 
 def _scan_second_group(code: str, begin: str, end: Optional[str], price_span: float, visible_from, visible_to):
     parent_dates, parent_context_by_date = build_parent_level_context(code, begin, end)
     chan = build_second_chan(code, begin, end)
-    for _ in chan.step_load():
-        pass
-
-    level_chan = chan[MODEL_LV_IDX]
-    child_level_chan = chan[CHILD_LV_IDX]
-    final_klus = list(level_chan.klu_iter())
-    pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
-    sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
     markers: List[Dict[str, Any]] = []
     loaded_model_dirs: Dict[str, str] = {}
+    seen = set()
 
-    for signal_side, target_is_buy in (("buy", True), ("sell", False)):
-        for bi in level_chan.bi_list:
-            if not bi.is_sure or not bi_matches_signal_side(bi, target_is_buy):
-                continue
-            entry_klu = bi.get_end_klu()
-            marker_time = int(entry_klu.time.ts)
-            if visible_from is not None and marker_time < visible_from:
-                continue
-            if visible_to is not None and marker_time > visible_to:
-                continue
-            pos = pos_by_idx.get(int(entry_klu.idx))
-            if pos is None:
-                continue
-            feature = second_bi_feature(
-                final_klus,
-                pos,
-                bi,
-                target_is_buy,
-                latest_previous_bsp(sorted_bsp_list, bi.idx),
-                latest_previous_first_bsp(sorted_bsp_list, bi.idx, target_is_buy),
-                _parent_context(parent_dates, parent_context_by_date, entry_klu),
-                child_level_chan,
-            )
-            probability, model_dir = _predict_probability("second", signal_side, feature)
-            loaded_model_dirs[signal_side] = model_dir
-            markers.append(_marker_payload(
-                klu=entry_klu,
-                probability=probability,
-                signal_side=signal_side,
-                label_group="second",
-                price_span=price_span,
-            ))
+    for snapshot in chan.step_load():
+        level_chan = snapshot[MODEL_LV_IDX]
+        child_level_chan = snapshot[CHILD_LV_IDX]
+        final_klus = list(level_chan.klu_iter())
+        if not final_klus:
+            continue
+        decision_klu = final_klus[-1]
+        pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
+        sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
+
+        for signal_side, target_is_buy in (("buy", True), ("sell", False)):
+            for bi in level_chan.bi_list:
+                if not bi.is_sure or not bi_matches_signal_side(bi, target_is_buy):
+                    continue
+                key = sample_key(code, signal_side, bi)
+                if key in seen:
+                    continue
+                entry_klu = bi.get_end_klu()
+                pos = pos_by_idx.get(int(entry_klu.idx))
+                if pos is None:
+                    continue
+                seen.add(key)
+                marker_time = int(entry_klu.time.ts)
+                if visible_from is not None and marker_time < visible_from:
+                    continue
+                if visible_to is not None and marker_time > visible_to:
+                    continue
+                feature = second_bi_feature(
+                    final_klus,
+                    pos,
+                    bi,
+                    target_is_buy,
+                    latest_previous_bsp(sorted_bsp_list, bi.idx),
+                    latest_previous_first_bsp(sorted_bsp_list, bi.idx, target_is_buy),
+                    _parent_context(parent_dates, parent_context_by_date, entry_klu),
+                    child_level_chan,
+                )
+                probability, model_dir = _predict_probability("second", signal_side, feature)
+                loaded_model_dirs[signal_side] = model_dir
+                markers.append(_marker_payload(
+                    klu=entry_klu,
+                    decision_klu=decision_klu,
+                    bi=bi,
+                    probability=probability,
+                    signal_side=signal_side,
+                    label_group="second",
+                    price_span=price_span,
+                    model_dir=model_dir,
+                ))
     return markers, loaded_model_dirs
 
 
@@ -287,6 +334,9 @@ def build_bsp_probability_payload(
         "status": status,
         "code": model_code,
         "modelLevel": "30M",
+        "scoringMode": "point_in_time_replay",
+        "labelMode": "point_in_time",
+        "labelSource": "as_of_replay",
         "models": models,
         "scoredCount": len(markers),
         "markers": markers,

@@ -340,7 +340,8 @@ def _parse_date_filter(value: Optional[str], is_end: bool = False) -> Optional[d
 
 def _signal_time(signal: Dict[str, Any]) -> Optional[datetime]:
     try:
-        return datetime.strptime(str(signal.get("open_time") or ""), "%Y/%m/%d %H:%M")
+        value = signal.get("signal_time") or signal.get("open_time") or ""
+        return datetime.strptime(str(value), "%Y/%m/%d %H:%M")
     except ValueError:
         return None
 
