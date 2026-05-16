@@ -38,6 +38,11 @@ from Debug.strategy_demo8 import (
     confirmed_bi_feature,
     latest_previous_bsp,
 )
+from Debug.bsp_point_in_time_label import (
+    latest_confirmed_bi_idx,
+    stability_context_feature,
+    target_bsp_by_key,
+)
 
 
 DEFAULT_DB_PATH = ROOT_DIR / "chan.db"
@@ -55,6 +60,8 @@ class BspProbabilityScanConfig:
     default_output_dir: Path
     feature_names: Tuple[str, ...]
     description: str
+    label_task: str = "recognition"
+    base_model_name: Optional[str] = None
 
 
 def load_model_bundle(model_dir: Path):
@@ -130,10 +137,15 @@ def load_model_bundles(signal_sides: List[str], buy_model_dir: str, sell_model_d
     return model_bundles
 
 
+def config_base_model_name(config: BspProbabilityScanConfig) -> str:
+    return config.base_model_name or config.model_name
+
+
 def build_scan_chan(config: BspProbabilityScanConfig, code: str, begin_time: str, end_time: Optional[str]):
-    if config.model_name == "demo8":
+    base_model_name = config_base_model_name(config)
+    if base_model_name == "demo8":
         return build_chan(code, begin_time, end_time)
-    if config.model_name == "demo9":
+    if base_model_name == "demo9":
         from Debug.strategy_demo9 import build_second_chan
 
         return build_second_chan(code, begin_time, end_time)
@@ -151,7 +163,8 @@ def build_scan_feature(
     child_level_chan,
 ) -> Dict[str, float]:
     previous_bsp = latest_previous_bsp(sorted_bsp_list, bi.idx)
-    if config.model_name == "demo8":
+    base_model_name = config_base_model_name(config)
+    if base_model_name == "demo8":
         return confirmed_bi_feature(
             final_klus,
             pos,
@@ -161,7 +174,7 @@ def build_scan_feature(
             parent_context,
             child_level_chan,
         )
-    if config.model_name == "demo9":
+    if base_model_name == "demo9":
         from Debug.strategy_demo9 import latest_previous_first_bsp, second_bi_feature
 
         previous_first_bsp = latest_previous_first_bsp(sorted_bsp_list, bi.idx, target_is_buy)
@@ -195,8 +208,10 @@ def score_chan_candidates(
     child_level_chan = chan[CHILD_LV_IDX]
     final_klus = list(level_chan.klu_iter())
     decision_time = ctime_to_str(final_klus[-1].time) if final_klus else None
+    decision_klu_idx = int(final_klus[-1].idx) if final_klus else -1
     pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
     sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
+    latest_bi_idx = latest_confirmed_bi_idx(level_chan)
     recent_min_klu_idx = None
     if recent_bars > 0 and final_klus:
         recent_min_klu_idx = int(final_klus[max(0, len(final_klus) - recent_bars)].idx)
@@ -205,9 +220,28 @@ def score_chan_candidates(
     for signal_side in signal_sides:
         target_is_buy = signal_side == "buy"
         model, feature_meta, model_dir = model_bundles[signal_side]
-        for bi in level_chan.bi_list:
-            if not bi.is_sure or not bi_matches_signal_side(bi, target_is_buy):
-                continue
+        if config.label_task == "stability":
+            bsps = target_bsp_by_key(
+                code=code,
+                signal_side=signal_side,
+                sorted_bsp_list=sorted_bsp_list,
+                target_is_buy=target_is_buy,
+                target_bsp_types=set(config.target_bsp_types),
+            )
+            candidates = [
+                (bsp.bi, bsp)
+                for bsp in sorted(bsps.values(), key=lambda item: int(item.bi.idx))
+            ]
+        elif config.label_task == "recognition":
+            candidates = [
+                (bi, None)
+                for bi in level_chan.bi_list
+                if bi.is_sure and bi_matches_signal_side(bi, target_is_buy)
+            ]
+        else:
+            raise ValueError(f"不支持的 label_task: {config.label_task}")
+
+        for bi, bsp in candidates:
 
             entry_klu = bi.get_end_klu()
             if recent_min_klu_idx is not None and int(entry_klu.idx) < recent_min_klu_idx:
@@ -230,6 +264,19 @@ def score_chan_candidates(
                 parent_context,
                 child_level_chan,
             )
+            if config.label_task == "stability":
+                feature.update(stability_context_feature(
+                    final_klus=final_klus,
+                    pos=pos,
+                    level_chan=level_chan,
+                    bi=bi,
+                    bsp=bsp,
+                    target_is_buy=target_is_buy,
+                    sorted_bsp_list=sorted_bsp_list,
+                    dependency_bsp_types=set(config.dependency_bsp_types),
+                    decision_klu_idx=decision_klu_idx,
+                    latest_bi_idx=latest_bi_idx,
+                ))
             probability = predict_probability(model, feature_meta, feature)
             feature_snapshot = {
                 feature_name: feature.get(feature_name)

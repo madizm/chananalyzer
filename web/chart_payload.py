@@ -256,13 +256,13 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
         ]
         if payload["firstProbabilityMarkers"]:
             payload["legend"].extend([
-                {"label": "一买概率", "color": "#b91c1c"},
-                {"label": "一卖概率", "color": "#15803d"},
+                {"label": "一买稳定概率", "color": "#b91c1c"},
+                {"label": "一卖稳定概率", "color": "#15803d"},
             ])
         if payload["secondProbabilityMarkers"]:
             payload["legend"].extend([
-                {"label": "二买概率", "color": "#b91c1c"},
-                {"label": "二卖概率", "color": "#15803d"},
+                {"label": "二买稳定概率", "color": "#b91c1c"},
+                {"label": "二卖稳定概率", "color": "#15803d"},
             ])
     except Exception as exc:
         payload["probabilityModel"] = {

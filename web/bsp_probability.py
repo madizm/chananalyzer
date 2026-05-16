@@ -18,9 +18,14 @@ from Debug.strategy_demo7 import (
     ctime_to_str,
     normalize_cache_code,
 )
-from Debug.bsp_point_in_time_label import bi_direction_text, sample_key
+from Debug.bsp_point_in_time_label import (
+    bi_direction_text,
+    latest_confirmed_bi_idx,
+    sample_key,
+    stability_context_feature,
+    target_bsp_by_key,
+)
 from Debug.strategy_demo8 import (
-    bi_matches_signal_side,
     confirmed_bi_feature,
     latest_previous_bsp,
 )
@@ -36,25 +41,26 @@ MODEL_GROUPS = {
     "first": {
         "name": "一类",
         "target_types": "1/1p",
+        "dependency_types": set(),
         "paths": {
             "buy": [
-                ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_buy",
-                ROOT_DIR / "Debug" / "model_output" / "strategy_demo8",
+                ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_stability_buy",
             ],
             "sell": [
-                ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_sell",
+                ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_stability_sell",
             ],
         },
     },
     "second": {
         "name": "二类",
         "target_types": "2/2s",
+        "dependency_types": {"1", "1p"},
         "paths": {
             "buy": [
-                ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_buy",
+                ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_stability_buy",
             ],
             "sell": [
-                ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_sell",
+                ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_stability_sell",
             ],
         },
     },
@@ -66,7 +72,7 @@ def _model_dir(label_group: str, signal_side: str) -> Path:
         if (model_dir / "model.pkl").exists() and (model_dir / "feature.meta.json").exists():
             return model_dir
     group_name = MODEL_GROUPS[label_group]["name"]
-    raise FileNotFoundError(f"未找到 {signal_side} 方向的{group_name}买卖点模型")
+    raise FileNotFoundError(f"未找到 {signal_side} 方向的{group_name}买卖点 stability 模型")
 
 
 @lru_cache(maxsize=8)
@@ -142,15 +148,15 @@ def _marker_payload(
         "biBeginTime": ctime_to_str(bi.get_begin_klu().time),
         "biEndTime": ctime_to_str(bi.get_end_klu().time),
         "biDirection": bi_direction_text(bi),
-        "labelMode": "point_in_time",
-        "labelSource": "as_of_replay",
-        "scoringMode": "point_in_time_replay",
+        "labelMode": "point_in_time_stability",
+        "labelSource": "as_of_replay_stability",
+        "scoringMode": "stability_replay",
         "modelDir": model_dir,
         "tooltip": (
             f"{MODEL_GROUPS[label_group]['name']} {MODEL_GROUPS[label_group]['target_types']} "
-            f"{'买' if is_buy else '卖'}点概率 {probability:.1%}; "
+            f"{'买' if is_buy else '卖'}点稳定概率 {probability:.1%}; "
             f"signal={klu.time.to_str()}; decision={decision_klu.time.to_str()}; "
-            "label=point-in-time"
+            "label=point-in-time-stability"
         ),
         "rawTime": klu.time.to_str(),
     }
@@ -176,13 +182,21 @@ def _scan_first_group(code: str, begin: str, end: Optional[str], price_span: flo
         if not final_klus:
             continue
         decision_klu = final_klus[-1]
+        decision_klu_idx = int(decision_klu.idx)
         pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
         sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
+        latest_bi_idx = latest_confirmed_bi_idx(level_chan)
 
         for signal_side, target_is_buy in (("buy", True), ("sell", False)):
-            for bi in level_chan.bi_list:
-                if not bi.is_sure or not bi_matches_signal_side(bi, target_is_buy):
-                    continue
+            bsps = target_bsp_by_key(
+                code=code,
+                signal_side=signal_side,
+                sorted_bsp_list=sorted_bsp_list,
+                target_is_buy=target_is_buy,
+                target_bsp_types=set(MODEL_GROUPS["first"]["target_types"].split("/")),
+            )
+            for bsp in sorted(bsps.values(), key=lambda item: int(item.bi.idx)):
+                bi = bsp.bi
                 key = sample_key(code, signal_side, bi)
                 if key in seen:
                     continue
@@ -205,6 +219,18 @@ def _scan_first_group(code: str, begin: str, end: Optional[str], price_span: flo
                     _parent_context(parent_dates, parent_context_by_date, entry_klu),
                     child_level_chan,
                 )
+                feature.update(stability_context_feature(
+                    final_klus=final_klus,
+                    pos=pos,
+                    level_chan=level_chan,
+                    bi=bi,
+                    bsp=bsp,
+                    target_is_buy=target_is_buy,
+                    sorted_bsp_list=sorted_bsp_list,
+                    dependency_bsp_types=MODEL_GROUPS["first"]["dependency_types"],
+                    decision_klu_idx=decision_klu_idx,
+                    latest_bi_idx=latest_bi_idx,
+                ))
                 probability, model_dir = _predict_probability("first", signal_side, feature)
                 loaded_model_dirs[signal_side] = model_dir
                 markers.append(_marker_payload(
@@ -234,13 +260,21 @@ def _scan_second_group(code: str, begin: str, end: Optional[str], price_span: fl
         if not final_klus:
             continue
         decision_klu = final_klus[-1]
+        decision_klu_idx = int(decision_klu.idx)
         pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
         sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
+        latest_bi_idx = latest_confirmed_bi_idx(level_chan)
 
         for signal_side, target_is_buy in (("buy", True), ("sell", False)):
-            for bi in level_chan.bi_list:
-                if not bi.is_sure or not bi_matches_signal_side(bi, target_is_buy):
-                    continue
+            bsps = target_bsp_by_key(
+                code=code,
+                signal_side=signal_side,
+                sorted_bsp_list=sorted_bsp_list,
+                target_is_buy=target_is_buy,
+                target_bsp_types=set(MODEL_GROUPS["second"]["target_types"].split("/")),
+            )
+            for bsp in sorted(bsps.values(), key=lambda item: int(item.bi.idx)):
+                bi = bsp.bi
                 key = sample_key(code, signal_side, bi)
                 if key in seen:
                     continue
@@ -264,6 +298,18 @@ def _scan_second_group(code: str, begin: str, end: Optional[str], price_span: fl
                     _parent_context(parent_dates, parent_context_by_date, entry_klu),
                     child_level_chan,
                 )
+                feature.update(stability_context_feature(
+                    final_klus=final_klus,
+                    pos=pos,
+                    level_chan=level_chan,
+                    bi=bi,
+                    bsp=bsp,
+                    target_is_buy=target_is_buy,
+                    sorted_bsp_list=sorted_bsp_list,
+                    dependency_bsp_types=MODEL_GROUPS["second"]["dependency_types"],
+                    decision_klu_idx=decision_klu_idx,
+                    latest_bi_idx=latest_bi_idx,
+                ))
                 probability, model_dir = _predict_probability("second", signal_side, feature)
                 loaded_model_dirs[signal_side] = model_dir
                 markers.append(_marker_payload(
@@ -292,7 +338,7 @@ def build_bsp_probability_payload(
         return {
             "enabled": False,
             "status": "skipped",
-            "reason": "仅30M级别输出买卖点模型概率",
+            "reason": "仅30M级别输出买卖点 stability 模型概率",
             "markers": [],
         }
 
@@ -334,9 +380,9 @@ def build_bsp_probability_payload(
         "status": status,
         "code": model_code,
         "modelLevel": "30M",
-        "scoringMode": "point_in_time_replay",
-        "labelMode": "point_in_time",
-        "labelSource": "as_of_replay",
+        "scoringMode": "stability_replay",
+        "labelMode": "point_in_time_stability",
+        "labelSource": "as_of_replay_stability",
         "models": models,
         "scoredCount": len(markers),
         "markers": markers,

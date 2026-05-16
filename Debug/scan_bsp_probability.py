@@ -30,11 +30,52 @@ from Debug.scan_demo9_bsp_probability import CONFIG as SECOND_CONFIG
 from Debug.strategy_demo7 import normalize_cache_code
 
 
+STABILITY_FEATURES = (
+    "stability_tail_distance_bars",
+    "stability_tail_distance_bis",
+    "stability_is_last_bi",
+    "stability_is_in_last_seg",
+    "stability_bsp_type_count",
+    "stability_has_dependency_bsp",
+    "stability_dependency_bsp_age_bars",
+    "stability_seg_is_sure",
+    "stability_zs_is_sure",
+    "stability_distance_to_seg_end",
+)
+
+FIRST_STABILITY_CONFIG = BspProbabilityScanConfig(
+    model_name="demo8_stability",
+    base_model_name=FIRST_CONFIG.model_name,
+    target_group=FIRST_CONFIG.target_group,
+    target_bsp_types=FIRST_CONFIG.target_bsp_types,
+    dependency_bsp_types=FIRST_CONFIG.dependency_bsp_types,
+    main_bs_type=FIRST_CONFIG.main_bs_type,
+    default_buy_model_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_stability_buy",
+    default_sell_model_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_stability_sell",
+    default_output_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_stability_scan",
+    feature_names=(*FIRST_CONFIG.feature_names, *STABILITY_FEATURES),
+    description="使用 demo8 stability 模型扫描30M一类买卖点的后续保留概率。",
+    label_task="stability",
+)
+SECOND_STABILITY_CONFIG = BspProbabilityScanConfig(
+    model_name="demo9_stability",
+    base_model_name=SECOND_CONFIG.model_name,
+    target_group=SECOND_CONFIG.target_group,
+    target_bsp_types=SECOND_CONFIG.target_bsp_types,
+    dependency_bsp_types=SECOND_CONFIG.dependency_bsp_types,
+    main_bs_type=SECOND_CONFIG.main_bs_type,
+    default_buy_model_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_stability_buy",
+    default_sell_model_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_stability_sell",
+    default_output_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_stability_scan",
+    feature_names=(*SECOND_CONFIG.feature_names, *STABILITY_FEATURES),
+    description="使用 demo9 stability 模型扫描30M二类买卖点的后续保留概率。",
+    label_task="stability",
+)
 CONFIG_BY_TARGET_GROUP: Dict[str, BspProbabilityScanConfig] = {
-    FIRST_CONFIG.target_group: FIRST_CONFIG,
-    SECOND_CONFIG.target_group: SECOND_CONFIG,
+    FIRST_STABILITY_CONFIG.target_group: FIRST_STABILITY_CONFIG,
+    SECOND_STABILITY_CONFIG.target_group: SECOND_STABILITY_CONFIG,
 }
-DEFAULT_OUTPUT_DIR = ROOT_DIR / "Debug" / "model_output" / "bsp_probability_scan"
+DEFAULT_OUTPUT_DIR = ROOT_DIR / "Debug" / "model_output" / "bsp_probability_stability_scan"
 
 
 def parse_target_groups(value: str) -> List[str]:
@@ -55,7 +96,7 @@ def parse_target_groups(value: str) -> List[str]:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="统一扫描30M确认笔的一类/二类买卖点模型概率。")
+    parser = argparse.ArgumentParser(description="统一扫描30M一类/二类买卖点 stability 模型概率。")
     parser.add_argument("--target-group", default="first,second", help="扫描目标组：first、second、first,second 或 all。")
     parser.add_argument("--code", default="sz.000001")
     parser.add_argument("--codes", default=None, help="逗号分隔股票列表，传入后覆盖 --code。")
@@ -64,7 +105,7 @@ def parse_args():
     parser.add_argument("--end-time", default=None)
     parser.add_argument("--signal-side", choices=["buy", "sell", "both"], default="both")
     parser.add_argument("--min-prob", type=float, default=0.60)
-    parser.add_argument("--recent-bars", type=int, default=48, help="只扫描最近 N 根30M K线内出现的确认笔；0 表示全历史。")
+    parser.add_argument("--recent-bars", type=int, default=48, help="只扫描最近 N 根30M K线内出现的买卖点；0 表示全历史。")
     parser.add_argument("--thresholds", default="0.55,0.60,0.65")
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
