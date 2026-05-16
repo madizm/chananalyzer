@@ -71,6 +71,21 @@ from Debug.strategy_demo7 import (
 from Debug.bsp_point_in_time_label import collect_bsp_stability_samples_for_code, collect_point_in_time_samples_for_code
 
 
+DIVERGENCE_RATE_CAP = 20.0
+
+
+def normalize_candidate_divergence_rate(value: float, cap: float = DIVERGENCE_RATE_CAP) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(number):
+        return 0.0
+    if math.isinf(number):
+        number = cap if number > 0 else 0.0
+    return math.log1p(min(max(number, 0.0), cap))
+
+
 def signal_side_is_buy(signal_side: str) -> bool:
     return signal_side == "buy"
 
@@ -180,7 +195,7 @@ def candidate_divergence_feature(bi) -> Dict[str, float]:
 
     feature.update({
         "candidate_divergence_exists": 1.0,
-        "candidate_divergence_rate": safe_div(out_metric, in_metric + 1e-7),
+        "candidate_divergence_rate": normalize_candidate_divergence_rate(safe_div(out_metric, in_metric + 1e-7)),
         "candidate_in_metric_peak": in_metric,
         "candidate_out_metric_peak": out_metric,
         "candidate_break_prev_extreme": float(bool(bi._low() <= pre_same_dir_bi._low())) if bi.is_down() else float(bool(bi._high() >= pre_same_dir_bi._high())),

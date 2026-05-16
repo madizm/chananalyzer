@@ -30,19 +30,6 @@ from Debug.scan_demo9_bsp_probability import CONFIG as SECOND_CONFIG
 from Debug.strategy_demo7 import normalize_cache_code
 
 
-STABILITY_FEATURES = (
-    "stability_tail_distance_bars",
-    "stability_tail_distance_bis",
-    "stability_is_last_bi",
-    "stability_is_in_last_seg",
-    "stability_bsp_type_count",
-    "stability_has_dependency_bsp",
-    "stability_dependency_bsp_age_bars",
-    "stability_seg_is_sure",
-    "stability_zs_is_sure",
-    "stability_distance_to_seg_end",
-)
-
 FIRST_STABILITY_CONFIG = BspProbabilityScanConfig(
     model_name="demo8_stability",
     base_model_name=FIRST_CONFIG.model_name,
@@ -53,7 +40,7 @@ FIRST_STABILITY_CONFIG = BspProbabilityScanConfig(
     default_buy_model_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_stability_buy",
     default_sell_model_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_stability_sell",
     default_output_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo8_stability_scan",
-    feature_names=(*FIRST_CONFIG.feature_names, *STABILITY_FEATURES),
+    feature_names=FIRST_CONFIG.feature_names,
     description="使用 demo8 stability 模型扫描30M一类买卖点的后续保留概率。",
     label_task="stability",
 )
@@ -67,7 +54,7 @@ SECOND_STABILITY_CONFIG = BspProbabilityScanConfig(
     default_buy_model_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_stability_buy",
     default_sell_model_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_stability_sell",
     default_output_dir=ROOT_DIR / "Debug" / "model_output" / "strategy_demo9_stability_scan",
-    feature_names=(*SECOND_CONFIG.feature_names, *STABILITY_FEATURES),
+    feature_names=SECOND_CONFIG.feature_names,
     description="使用 demo9 stability 模型扫描30M二类买卖点的后续保留概率。",
     label_task="stability",
 )

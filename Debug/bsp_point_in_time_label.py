@@ -520,18 +520,6 @@ def collect_bsp_stability_samples_for_code(
                 pick_parent_context(parent_dates, parent_context_by_date, entry_klu),
                 child_level_chan,
             )
-            feature.update(stability_context_feature(
-                final_klus=final_klus,
-                pos=pos,
-                level_chan=level_chan,
-                bi=bi,
-                bsp=bsp,
-                target_is_buy=target_is_buy,
-                sorted_bsp_list=sorted_bsp_list,
-                dependency_bsp_types=dependency_bsp_types,
-                decision_klu_idx=decision_klu_idx,
-                latest_bi_idx=latest_bi_idx,
-            ))
 
             sample = SignalSample(
                 code=code,

@@ -39,8 +39,6 @@ from Debug.strategy_demo8 import (
     latest_previous_bsp,
 )
 from Debug.bsp_point_in_time_label import (
-    latest_confirmed_bi_idx,
-    stability_context_feature,
     target_bsp_by_key,
 )
 
@@ -73,6 +71,12 @@ def load_model_bundle(model_dir: Path):
         model = pickle.load(fid)
     with feature_meta_path.open("r", encoding="utf-8") as fid:
         feature_meta = json.load(fid)
+    deprecated_features = sorted(name for name in feature_meta if name.startswith("stability_"))
+    if deprecated_features:
+        raise ValueError(
+            f"模型仍包含已废弃的 stability_* 特征，请重新训练后再使用：{model_dir}; "
+            f"示例字段：{', '.join(deprecated_features[:3])}"
+        )
     return model, feature_meta
 
 
@@ -191,6 +195,72 @@ def build_scan_feature(
     raise ValueError(f"不支持的模型扫描配置：{config.model_name}")
 
 
+def score_candidate_row(
+    *,
+    config: BspProbabilityScanConfig,
+    code: str,
+    signal_side: str,
+    bi,
+    bsp,
+    final_klus: List,
+    pos_by_idx: Dict[int, int],
+    sorted_bsp_list: List,
+    parent_dates: List[str],
+    parent_context_by_date: Dict[str, Dict[str, float]],
+    child_level_chan,
+    decision_time: Optional[str],
+    min_prob: float,
+    thresholds: List[float],
+    model,
+    feature_meta: Dict[str, int],
+    model_dir: str,
+) -> Optional[Dict]:
+    target_is_buy = signal_side == "buy"
+    entry_klu = bi.get_end_klu()
+    pos = pos_by_idx.get(int(entry_klu.idx))
+    if pos is None:
+        return None
+
+    entry_date = ctime_to_date_str(entry_klu.time)
+    parent_pos = bisect_left(parent_dates, entry_date) - 1
+    parent_context = parent_context_by_date[parent_dates[parent_pos]] if parent_pos >= 0 else None
+    feature = build_scan_feature(
+        config,
+        final_klus,
+        pos,
+        bi,
+        target_is_buy,
+        sorted_bsp_list,
+        parent_context,
+        child_level_chan,
+    )
+    probability = predict_probability(model, feature_meta, feature)
+    feature_snapshot = {
+        feature_name: feature.get(feature_name)
+        for feature_name in config.feature_names
+    }
+    row = {
+        "model_name": config.model_name,
+        "target_group": config.target_group,
+        "target_bsp_types": ",".join(config.target_bsp_types),
+        "code": code,
+        "signal_side": signal_side,
+        "open_time": ctime_to_str(entry_klu.time),
+        "signal_time": ctime_to_str(entry_klu.time),
+        "decision_time": decision_time,
+        "bi_idx": int(bi.idx),
+        "klu_idx": int(entry_klu.idx),
+        "price": float(entry_klu.close),
+        "probability": probability,
+        "hit_min_prob": probability >= min_prob,
+        "feature_snapshot": feature_snapshot,
+        "model_dir": model_dir,
+    }
+    row.update(threshold_hit_fields(probability, thresholds))
+    row.update(feature_snapshot)
+    return row
+
+
 def score_chan_candidates(
     *,
     config: BspProbabilityScanConfig,
@@ -207,11 +277,9 @@ def score_chan_candidates(
     level_chan = chan[MODEL_LV_IDX]
     child_level_chan = chan[CHILD_LV_IDX]
     final_klus = list(level_chan.klu_iter())
-    decision_time = ctime_to_str(final_klus[-1].time) if final_klus else None
-    decision_klu_idx = int(final_klus[-1].idx) if final_klus else -1
+    decision_time = None
     pos_by_idx = {int(klu.idx): pos for pos, klu in enumerate(final_klus)}
     sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
-    latest_bi_idx = latest_confirmed_bi_idx(level_chan)
     recent_min_klu_idx = None
     if recent_bars > 0 and final_klus:
         recent_min_klu_idx = int(final_klus[max(0, len(final_klus) - recent_bars)].idx)
@@ -242,66 +310,31 @@ def score_chan_candidates(
             raise ValueError(f"不支持的 label_task: {config.label_task}")
 
         for bi, bsp in candidates:
-
             entry_klu = bi.get_end_klu()
             if recent_min_klu_idx is not None and int(entry_klu.idx) < recent_min_klu_idx:
                 continue
 
-            pos = pos_by_idx.get(int(entry_klu.idx))
-            if pos is None:
-                continue
-
-            entry_date = ctime_to_date_str(entry_klu.time)
-            parent_pos = bisect_left(parent_dates, entry_date) - 1
-            parent_context = parent_context_by_date[parent_dates[parent_pos]] if parent_pos >= 0 else None
-            feature = build_scan_feature(
-                config,
-                final_klus,
-                pos,
-                bi,
-                target_is_buy,
-                sorted_bsp_list,
-                parent_context,
-                child_level_chan,
+            row = score_candidate_row(
+                config=config,
+                code=code,
+                signal_side=signal_side,
+                bi=bi,
+                bsp=bsp,
+                final_klus=final_klus,
+                pos_by_idx=pos_by_idx,
+                sorted_bsp_list=sorted_bsp_list,
+                parent_dates=parent_dates,
+                parent_context_by_date=parent_context_by_date,
+                child_level_chan=child_level_chan,
+                decision_time=decision_time,
+                min_prob=min_prob,
+                thresholds=thresholds,
+                model=model,
+                feature_meta=feature_meta,
+                model_dir=model_dir,
             )
-            if config.label_task == "stability":
-                feature.update(stability_context_feature(
-                    final_klus=final_klus,
-                    pos=pos,
-                    level_chan=level_chan,
-                    bi=bi,
-                    bsp=bsp,
-                    target_is_buy=target_is_buy,
-                    sorted_bsp_list=sorted_bsp_list,
-                    dependency_bsp_types=set(config.dependency_bsp_types),
-                    decision_klu_idx=decision_klu_idx,
-                    latest_bi_idx=latest_bi_idx,
-                ))
-            probability = predict_probability(model, feature_meta, feature)
-            feature_snapshot = {
-                feature_name: feature.get(feature_name)
-                for feature_name in config.feature_names
-            }
-            row = {
-                "model_name": config.model_name,
-                "target_group": config.target_group,
-                "target_bsp_types": ",".join(config.target_bsp_types),
-                "code": code,
-                "signal_side": signal_side,
-                "open_time": ctime_to_str(entry_klu.time),
-                "signal_time": ctime_to_str(entry_klu.time),
-                "decision_time": decision_time,
-                "bi_idx": int(bi.idx),
-                "klu_idx": int(entry_klu.idx),
-                "price": float(entry_klu.close),
-                "probability": probability,
-                "hit_min_prob": probability >= min_prob,
-                "feature_snapshot": feature_snapshot,
-                "model_dir": model_dir,
-            }
-            row.update(threshold_hit_fields(probability, thresholds))
-            row.update(feature_snapshot)
-            rows.append(row)
+            if row is not None:
+                rows.append(row)
 
     rows.sort(key=lambda item: (-float(item["probability"]), item["open_time"], item["code"], item["signal_side"]))
     return rows
