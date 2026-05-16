@@ -37,6 +37,10 @@ from Debug.strategy_demo9 import (
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+LABEL_MIN_PROBABILITY = 0.55
+LABEL_COLLISION_WINDOW_SECONDS = 2 * 24 * 60 * 60
+LABEL_LANE_STEP = 0.035
+LABEL_GROUP_PRIORITY = {"first": 0, "second": 1}
 MODEL_GROUPS = {
     "first": {
         "name": "一类",
@@ -113,6 +117,111 @@ def _price_span(bars: List[Dict[str, Any]]) -> float:
     return max(max_price - min_price, max(abs(max_price), 1.0) * 0.03)
 
 
+def _group_short_name(label_group: str) -> str:
+    return "1" if label_group == "first" else "2"
+
+
+def _label_component(marker: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "labelGroup": marker["labelGroup"],
+        "targetTypes": marker["targetTypes"],
+        "probability": marker["probability"],
+        "modelDir": marker["modelDir"],
+    }
+
+
+def _component_badge(signal_side: str, component: Dict[str, Any]) -> str:
+    prefix = "B" if signal_side == "buy" else "S"
+    return f"{prefix}{_group_short_name(component['labelGroup'])} {component['probability']:.0%}"
+
+
+def _merged_badge(signal_side: str, components: List[Dict[str, Any]]) -> str:
+    ordered = sorted(
+        components,
+        key=lambda item: (LABEL_GROUP_PRIORITY.get(item["labelGroup"], 99), -float(item["probability"])),
+    )
+    return " ".join(_component_badge(signal_side, component) for component in ordered)
+
+
+def _combined_tooltip(marker: Dict[str, Any], components: List[Dict[str, Any]]) -> str:
+    side_name = "买" if marker["signalSide"] == "buy" else "卖"
+    detail = "；".join(
+        f"{MODEL_GROUPS[item['labelGroup']]['name']} {item['targetTypes']} {side_name}点稳定概率 {item['probability']:.1%}"
+        for item in sorted(
+            components,
+            key=lambda component: (LABEL_GROUP_PRIORITY.get(component["labelGroup"], 99), -float(component["probability"])),
+        )
+    )
+    return (
+        f"{detail}; signal={marker['signalTime']}; decision={marker['decisionTime']}; "
+        "label=point-in-time-stability"
+    )
+
+
+def _primary_component(components: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return max(
+        components,
+        key=lambda item: (LABEL_GROUP_PRIORITY.get(item["labelGroup"], -1), float(item["probability"])),
+    )
+
+
+def _merge_same_signal_markers(markers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged_by_key: Dict[tuple, Dict[str, Any]] = {}
+    for marker in markers:
+        key = (
+            marker["time"],
+            marker["signalSide"],
+            marker["biBeginTime"],
+            marker["biEndTime"],
+            marker["biDirection"],
+        )
+        component = _label_component(marker)
+        if key not in merged_by_key:
+            merged = dict(marker)
+            merged["components"] = [component]
+            merged_by_key[key] = merged
+            continue
+
+        merged = merged_by_key[key]
+        merged["components"].append(component)
+        primary = _primary_component(merged["components"])
+        merged["labelGroup"] = primary["labelGroup"]
+        merged["targetTypes"] = "/".join(
+            sorted({item["targetTypes"] for item in merged["components"]})
+        )
+        merged["probability"] = max(float(item["probability"]) for item in merged["components"])
+        merged["modelDir"] = primary["modelDir"]
+        merged["badge"] = _merged_badge(marker["signalSide"], merged["components"])
+        merged["tooltip"] = _combined_tooltip(merged, merged["components"])
+    return list(merged_by_key.values())
+
+
+def _layout_probability_labels(markers: List[Dict[str, Any]], price_span: float) -> List[Dict[str, Any]]:
+    markers = _merge_same_signal_markers(markers)
+    visible_labels: List[Dict[str, Any]] = []
+    for marker in sorted(markers, key=lambda item: (item["time"], item["signalSide"], -float(item["probability"]))):
+        marker["showText"] = float(marker["probability"]) >= LABEL_MIN_PROBABILITY
+        marker["labelLane"] = 0
+        if not marker["showText"]:
+            continue
+
+        nearby = [
+            item for item in visible_labels
+            if item["signalSide"] == marker["signalSide"]
+            and abs(int(item["time"]) - int(marker["time"])) <= LABEL_COLLISION_WINDOW_SECONDS
+        ]
+        lane = 0
+        used_lanes = {int(item.get("labelLane", 0)) for item in nearby}
+        while lane in used_lanes:
+            lane += 1
+        marker["labelLane"] = lane
+        direction = -1 if marker["signalSide"] == "buy" else 1
+        base_offset = 0.075 if marker["labelGroup"] == "first" else 0.105
+        marker["labelPrice"] = float(marker["price"]) + direction * price_span * (base_offset + lane * LABEL_LANE_STEP)
+        visible_labels.append(marker)
+    return sorted(markers, key=lambda item: (item["time"], item["signalSide"]))
+
+
 def _marker_payload(
     *,
     klu,
@@ -138,6 +247,9 @@ def _marker_payload(
         "shape": "arrow_up" if is_buy else "arrow_down",
         "color": color,
         "badge": f"{prefix}{suffix}{probability:.0%}",
+        "showText": True,
+        "labelLane": 0,
+        "components": [],
         "isSeg": False,
         "probability": probability,
         "signalSide": signal_side,
@@ -373,7 +485,8 @@ def build_bsp_probability_payload(
                 "scoredCount": 0,
             }
 
-    markers.sort(key=lambda item: (item["time"], item["signalSide"]))
+    raw_scored_count = len(markers)
+    markers = _layout_probability_labels(markers, price_span)
     status = "ok" if any(model.get("status") == "ok" for model in models.values()) else "error"
     return {
         "enabled": True,
@@ -383,7 +496,10 @@ def build_bsp_probability_payload(
         "scoringMode": "stability_replay",
         "labelMode": "point_in_time_stability",
         "labelSource": "as_of_replay_stability",
+        "labelMinProbability": LABEL_MIN_PROBABILITY,
+        "rawScoredCount": raw_scored_count,
         "models": models,
         "scoredCount": len(markers),
+        "visibleLabelCount": sum(1 for marker in markers if marker.get("showText")),
         "markers": markers,
     }
