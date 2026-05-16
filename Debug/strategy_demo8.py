@@ -68,7 +68,7 @@ from Debug.strategy_demo7 import (
     write_feature_importance,
     write_libsvm,
 )
-from Debug.bsp_point_in_time_label import collect_point_in_time_samples_for_code
+from Debug.bsp_point_in_time_label import collect_bsp_stability_samples_for_code, collect_point_in_time_samples_for_code
 
 
 def signal_side_is_buy(signal_side: str) -> bool:
@@ -87,9 +87,11 @@ def label_target_name(target_is_buy: bool) -> str:
     return "confirmed_bi_is_target_buy_point" if target_is_buy else "confirmed_bi_is_target_sell_point"
 
 
-def label_definition_text(target_is_buy: bool, label_mode: str = "point_in_time") -> str:
+def label_definition_text(target_is_buy: bool, label_mode: str = "point_in_time", label_task: str = "recognition") -> str:
     bi_name = signal_side_bi_name(target_is_buy)
     point_name = signal_side_point_name(target_is_buy)
+    if label_task == "stability":
+        return f"1 表示 decision_time 当时已出现的一类{point_name}(1/1p)在稳定性观察窗口结束时仍保留，0 表示窗口内消失、迁移或类型不再匹配。"
     if label_mode == "point_in_time":
         return f"1 表示确认{bi_name}在 decision_time 当时可见结构中存在目标{point_name}(1/1p)，0 表示当时可见结构中不是目标{point_name}。"
     return f"1 表示确认{bi_name}最终存在目标{point_name}(1/1p)，0 表示确认{bi_name}不是目标{point_name}。"
@@ -266,7 +268,32 @@ def collect_confirmed_bi_samples_for_code(
     target_is_buy: bool,
     label_mode: str = "point_in_time",
     decision_delay_bars: int = 0,
+    label_task: str = "recognition",
+    stability_bars: int = 16,
+    stability_bis: int = 0,
+    stability_days: int = 0,
+    stability_window_mode: str = "any",
 ) -> Tuple[str, List[SignalSample]]:
+    if label_task == "stability":
+        if label_mode != "point_in_time":
+            raise ValueError("稳定性模型只支持 --label-mode point_in_time")
+        return collect_bsp_stability_samples_for_code(
+            code=code,
+            begin_time=begin_time,
+            end_time=end_time,
+            target_is_buy=target_is_buy,
+            target_bsp_types=set(TARGET_BSP_TYPES),
+            dependency_bsp_types=set(),
+            build_chan_fn=build_chan,
+            feature_builder=point_in_time_feature_builder,
+            decision_delay_bars=decision_delay_bars,
+            stability_bars=stability_bars,
+            stability_bis=stability_bis,
+            stability_days=stability_days,
+            stability_window_mode=stability_window_mode,
+        )
+    if label_task != "recognition":
+        raise ValueError(f"不支持的 label_task: {label_task}")
     if label_mode == "point_in_time":
         point_name = "buy_point" if target_is_buy else "sell_point"
         return collect_point_in_time_samples_for_code(
@@ -367,6 +394,11 @@ def collect_confirmed_bi_samples(
     target_is_buy: bool,
     label_mode: str = "point_in_time",
     decision_delay_bars: int = 0,
+    label_task: str = "recognition",
+    stability_bars: int = 16,
+    stability_bis: int = 0,
+    stability_days: int = 0,
+    stability_window_mode: str = "any",
 ) -> List[SignalSample]:
     worker_count = resolve_signal_workers(signal_workers, len(codes))
     samples_by_code: Dict[str, List[SignalSample]] = {}
@@ -382,6 +414,11 @@ def collect_confirmed_bi_samples(
                     target_is_buy,
                     label_mode,
                     decision_delay_bars,
+                    label_task,
+                    stability_bars,
+                    stability_bis,
+                    stability_days,
+                    stability_window_mode,
                 )
                 samples_by_code[code] = code_samples
                 print(f"{code}: 确认{bi_name}样本 {len(code_samples)}")
@@ -399,6 +436,11 @@ def collect_confirmed_bi_samples(
                     target_is_buy,
                     label_mode,
                     decision_delay_bars,
+                    label_task,
+                    stability_bars,
+                    stability_bis,
+                    stability_days,
+                    stability_window_mode,
                 ): code
                 for code in codes
             }
@@ -424,6 +466,28 @@ def correctness_summary(samples: List[SignalSample]) -> Dict:
         "correct_bsp_count": correct_count,
         "not_bsp_count": total - correct_count,
         "correct_bsp_rate": safe_div(float(correct_count), float(total)),
+    }
+
+
+def stability_summary(samples: List[SignalSample]) -> Dict:
+    def count_by_attr(attr_name: str) -> Dict[str, int]:
+        result: Dict[str, int] = {}
+        for sample in samples:
+            value = getattr(sample, attr_name, None)
+            key = str(value) if value not in {None, ""} else "stable"
+            result[key] = result.get(key, 0) + 1
+        return result
+
+    stable_count = sum(1 for sample in samples if int(sample.label) == 1)
+    unstable_count = len(samples) - stable_count
+    return {
+        "stability_sample_count": len(samples),
+        "stable_count": stable_count,
+        "unstable_count": unstable_count,
+        "stable_rate": safe_div(float(stable_count), float(len(samples))),
+        "unstable_reason_counts": count_by_attr("unstable_reason"),
+        "match_level_counts": count_by_attr("match_level"),
+        "window_close_reason_counts": count_by_attr("window_close_reason"),
     }
 
 
@@ -508,6 +572,7 @@ def train_correctness_model(
     score_thresholds: List[float],
     target_is_buy: bool,
     label_mode: str = "point_in_time",
+    label_task: str = "recognition",
 ):
     x_train = build_matrix(train_samples, feature_meta)
     y_train = [int(sample.label) for sample in train_samples]
@@ -545,7 +610,7 @@ def train_correctness_model(
         "score_buckets": score_buckets,
         "score_thresholds": summarize_score_thresholds(test_prob, test_samples, score_thresholds),
         "time_period_metrics": summarize_time_period_metrics(test_prob, test_samples),
-        "label_definition": label_definition_text(target_is_buy, label_mode),
+        "label_definition": label_definition_text(target_is_buy, label_mode, label_task),
     }
     return model, metrics, test_prob
 
@@ -560,6 +625,7 @@ def run_walk_forward_validation(
     target_is_buy: bool,
     min_test_time: Optional[str] = None,
     label_mode: str = "point_in_time",
+    label_task: str = "recognition",
 ) -> List[Dict]:
     sorted_samples = sorted(samples, key=lambda sample: (sample.open_time, sample.code, sample.open_klu_idx))
     rows = []
@@ -611,6 +677,7 @@ def run_walk_forward_validation(
             score_thresholds,
             target_is_buy,
             label_mode,
+            label_task,
         )
         window_metrics.pop("time_period_metrics", None)
         row.update(window_metrics)
@@ -664,6 +731,82 @@ def write_samples_csv(path: Path, samples: List[SignalSample], score_by_key: Opt
             })
 
 
+def write_stability_samples_csv(path: Path, samples: List[SignalSample], score_by_key: Optional[Dict[Tuple[str, int], float]] = None) -> None:
+    score_by_key = score_by_key or {}
+    with path.open("w", newline="", encoding="utf-8") as fid:
+        writer = csv.DictWriter(
+            fid,
+            fieldnames=[
+                "open_time",
+                "decision_time",
+                "signal_time",
+                "code",
+                "open_klu_idx",
+                "bsp_klu_idx",
+                "bi_begin_time",
+                "bi_end_time",
+                "bi_direction",
+                "entry_price",
+                "label",
+                "stability_label",
+                "label_task",
+                "label_mode",
+                "label_source",
+                "score",
+                "first_seen_bsp_types",
+                "first_seen_bsp_side",
+                "stability_bars",
+                "stability_bis",
+                "stability_days",
+                "stability_window_mode",
+                "window_close_time",
+                "window_close_reason",
+                "last_match_time",
+                "last_match_bi_begin_time",
+                "last_match_bi_end_time",
+                "last_match_bsp_types",
+                "match_level",
+                "unstable_reason",
+                "exit_reason",
+            ],
+        )
+        writer.writeheader()
+        for sample in samples:
+            writer.writerow({
+                "open_time": sample.open_time,
+                "decision_time": sample.decision_time,
+                "signal_time": sample.signal_time,
+                "code": sample.code,
+                "open_klu_idx": sample.open_klu_idx,
+                "bsp_klu_idx": sample.bsp_klu_idx,
+                "bi_begin_time": sample.bi_begin_time,
+                "bi_end_time": sample.bi_end_time,
+                "bi_direction": sample.bi_direction,
+                "entry_price": sample.entry_price,
+                "label": sample.label,
+                "stability_label": getattr(sample, "stability_label", sample.label),
+                "label_task": getattr(sample, "label_task", None),
+                "label_mode": sample.label_mode,
+                "label_source": sample.label_source,
+                "score": score_by_key.get((sample.code, sample.open_klu_idx)),
+                "first_seen_bsp_types": getattr(sample, "first_seen_bsp_types", None),
+                "first_seen_bsp_side": getattr(sample, "first_seen_bsp_side", None),
+                "stability_bars": getattr(sample, "stability_bars", None),
+                "stability_bis": getattr(sample, "stability_bis", None),
+                "stability_days": getattr(sample, "stability_days", None),
+                "stability_window_mode": getattr(sample, "stability_window_mode", None),
+                "window_close_time": getattr(sample, "window_close_time", None),
+                "window_close_reason": getattr(sample, "window_close_reason", None),
+                "last_match_time": getattr(sample, "last_match_time", None),
+                "last_match_bi_begin_time": getattr(sample, "last_match_bi_begin_time", None),
+                "last_match_bi_end_time": getattr(sample, "last_match_bi_end_time", None),
+                "last_match_bsp_types": getattr(sample, "last_match_bsp_types", None),
+                "match_level": getattr(sample, "match_level", None),
+                "unstable_reason": getattr(sample, "unstable_reason", None),
+                "exit_reason": sample.exit_reason,
+            })
+
+
 def ensure_two_classes(samples: List[SignalSample], name: str) -> None:
     classes = {sample.label for sample in samples}
     if len(classes) < 2:
@@ -678,11 +821,16 @@ def build_run_config(args, codes: List[str], split_info: Dict[str, str]) -> Dict
         "begin_time": args.begin_time,
         "end_time": args.end_time,
         "signal_side": args.signal_side,
+        "label_task": args.label_task,
         "label_target": label_target_name(target_is_buy),
         "label_mode": args.label_mode,
-        "label_source": "as_of_replay" if args.label_mode == "point_in_time" else "final_structure",
-        "label_definition": label_definition_text(target_is_buy, args.label_mode),
+        "label_source": "as_of_replay_stability" if args.label_task == "stability" else ("as_of_replay" if args.label_mode == "point_in_time" else "final_structure"),
+        "label_definition": label_definition_text(target_is_buy, args.label_mode, args.label_task),
         "label_decision_delay_bars": args.decision_delay_bars,
+        "stability_bars": args.stability_bars,
+        "stability_bis": args.stability_bis,
+        "stability_days": args.stability_days,
+        "stability_window_mode": args.stability_window_mode,
         "target_bsp_types": sorted(TARGET_BSP_TYPES),
         "main_bs_type": "1,1p",
         "data_src": "CACHE_DB",
@@ -726,8 +874,13 @@ def parse_args():
     parser.add_argument("--walk-forward-min-train-samples", type=int, default=100)
     parser.add_argument("--walk-forward-min-test-samples", type=int, default=50)
     parser.add_argument("--signal-workers", type=int, default=0)
+    parser.add_argument("--label-task", choices=["recognition", "stability"], default="recognition", help="recognition 训练买卖点识别模型；stability 只使用已出现的买卖点训练后续保留概率。")
     parser.add_argument("--label-mode", choices=["point_in_time", "final"], default="point_in_time", help="point_in_time 使用当时可见结构贴标签；final 使用完整区间最终结构贴标签。")
     parser.add_argument("--decision-delay-bars", type=int, default=0, help="point_in_time 模式下，候选笔结束后至少等待 N 根30M K线再采样。")
+    parser.add_argument("--stability-bars", type=int, default=16, help="stability 任务中，观察后续 N 根30M K线后贴稳定性标签。")
+    parser.add_argument("--stability-bis", type=int, default=0, help="stability 任务中，观察后续 N 根确认笔后贴稳定性标签。")
+    parser.add_argument("--stability-days", type=int, default=0, help="stability 任务中，观察后续 N 个自然日后贴稳定性标签。")
+    parser.add_argument("--stability-window-mode", choices=["any", "all"], default="any", help="多个稳定性窗口同时配置时，any 表示任一满足即关闭，all 表示全部满足才关闭。")
     parser.add_argument("--output-dir", default=None)
     return parser.parse_args()
 
@@ -735,11 +888,18 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     target_is_buy = signal_side_is_buy(args.signal_side)
-    default_output_dir = "Debug/model_output/strategy_demo8_buy" if target_is_buy else "Debug/model_output/strategy_demo8_sell"
+    if args.label_task == "stability":
+        default_output_dir = "Debug/model_output/strategy_demo8_stability_buy" if target_is_buy else "Debug/model_output/strategy_demo8_stability_sell"
+    else:
+        default_output_dir = "Debug/model_output/strategy_demo8_buy" if target_is_buy else "Debug/model_output/strategy_demo8_sell"
     output_dir = Path(args.output_dir or default_output_dir)
     bi_name = signal_side_bi_name(target_is_buy)
     if args.decision_delay_bars < 0:
         raise ValueError("--decision-delay-bars 不能小于 0")
+    if args.stability_bars < 0 or args.stability_bis < 0 or args.stability_days < 0:
+        raise ValueError("--stability-bars/--stability-bis/--stability-days 不能小于 0")
+    if args.label_task == "stability" and args.label_mode != "point_in_time":
+        raise ValueError("--label-task stability 只支持 --label-mode point_in_time")
 
     if args.all:
         codes = get_stock_list_from_cache(DB_KL_TYPE)
@@ -757,9 +917,14 @@ if __name__ == "__main__":
         target_is_buy,
         args.label_mode,
         args.decision_delay_bars,
+        args.label_task,
+        args.stability_bars,
+        args.stability_bis,
+        args.stability_days,
+        args.stability_window_mode,
     )
     if not samples:
-        raise ValueError(f"没有生成任何确认{bi_name}样本，请检查数据源连接、股票代码或时间范围。")
+        raise ValueError(f"没有生成任何确认{bi_name}样本，请检查数据源连接、股票代码、时间范围或稳定性观察窗口。")
     if len(samples) < 20:
         raise ValueError(f"确认{bi_name}样本太少：{len(samples)}，请扩大时间范围。")
 
@@ -777,15 +942,21 @@ if __name__ == "__main__":
         score_thresholds,
         target_is_buy,
         args.label_mode,
+        args.label_task,
     )
     metrics.update({
         "kl_type": DB_KL_TYPE,
         "parent_kl_type": PARENT_DB_KL_TYPE,
         "child_kl_type": CHILD_DB_KL_TYPE,
+        "label_task": args.label_task,
         "label_mode": args.label_mode,
-        "label_source": "as_of_replay" if args.label_mode == "point_in_time" else "final_structure",
+        "label_source": "as_of_replay_stability" if args.label_task == "stability" else ("as_of_replay" if args.label_mode == "point_in_time" else "final_structure"),
         "label_decision_delay_bars": args.decision_delay_bars,
         "label_target_bsp_types": sorted(TARGET_BSP_TYPES),
+        "stability_bars": args.stability_bars,
+        "stability_bis": args.stability_bis,
+        "stability_days": args.stability_days,
+        "stability_window_mode": args.stability_window_mode,
         "split_mode": split_info["mode"],
         "split_time": split_info["split_time"],
         "train_period": split_info["train_period"],
@@ -794,6 +965,8 @@ if __name__ == "__main__":
         "test_code_count": len({sample.code for sample in test_samples}),
         "run_config": build_run_config(args, codes, split_info),
     })
+    if args.label_task == "stability":
+        metrics["stability_summary"] = stability_summary(samples)
     if args.walk_forward:
         walk_forward_test_periods = parse_period_list(args.walk_forward_test_periods)
         if walk_forward_test_periods is None:
@@ -808,6 +981,7 @@ if __name__ == "__main__":
             target_is_buy,
             split_info["split_time"],
             args.label_mode,
+            args.label_task,
         )
 
     feature_importance = get_feature_importance(model, feature_meta)
@@ -825,7 +999,13 @@ if __name__ == "__main__":
         json.dump(metrics, fid, ensure_ascii=False, indent=2)
     with (output_dir / "feature_importance.json").open("w", encoding="utf-8") as fid:
         json.dump(feature_importance, fid, ensure_ascii=False, indent=2)
-    write_samples_csv(output_dir / "samples.csv", samples, score_by_key)
+    if args.label_task == "stability":
+        with (output_dir / "stability_metrics.json").open("w", encoding="utf-8") as fid:
+            json.dump(metrics, fid, ensure_ascii=False, indent=2)
+        write_stability_samples_csv(output_dir / "stability_samples.csv", samples, score_by_key)
+        write_stability_samples_csv(output_dir / "samples.csv", samples, score_by_key)
+    else:
+        write_samples_csv(output_dir / "samples.csv", samples, score_by_key)
     write_libsvm(output_dir / "samples.libsvm", samples, feature_meta)
     write_feature_importance(output_dir / "feature_importance.csv", feature_importance)
 
