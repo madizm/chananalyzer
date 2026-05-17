@@ -193,7 +193,6 @@ function drawMarkers(chart, items) {
       shape: item.shape, lock: true, disableSelection: true, disableSave: true, disableUndo: true,
       showInObjectsTree: false, zOrder: 'top', overrides: { color: item.color },
     });
-    if (item.showText === false || item.labelPrice == null || !item.badge) return;
     createShapeSafe(chart, { time: item.time, price: item.labelPrice }, {
       shape: 'text', text: item.badge, lock: true, disableSelection: true, disableSave: true, disableUndo: true,
       showInObjectsTree: false, zOrder: 'top', overrides: { color: item.color, fontsize: item.isSeg ? 16 : 14, bold: item.isSeg },
@@ -240,22 +239,18 @@ function renderControls() {
 }
 
 function setupLayers() {
-  const hasProbabilityMarkers = (
-    (payload.firstProbabilityMarkers && payload.firstProbabilityMarkers.length > 0) ||
-    (payload.secondProbabilityMarkers && payload.secondProbabilityMarkers.length > 0)
-  );
   controlSpecs = [
     { key: 'klc', label: '合并K线', color: '#7c3aed', available: payload.klc && payload.klc.length > 0 },
     { key: 'bi', label: '笔', color: '#111111', available: payload.bi && payload.bi.length > 0 },
     { key: 'seg', label: '段', color: '#00897b', available: payload.seg && payload.seg.length > 0 },
     { key: 'zs', label: '中枢', color: '#fb8c00', available: payload.zs && payload.zs.length > 0 },
     { key: 'mean', label: '均线', color: '#5e35b1', available: payload.mean && payload.mean.length > 0 },
-    { key: 'bsp', label: '买卖点', color: '#d32f2f', available: payload.bspMarkers && payload.bspMarkers.length > 0, defaultActive: !hasProbabilityMarkers },
+    { key: 'bsp', label: '买卖点', color: '#d32f2f', available: payload.bspMarkers && payload.bspMarkers.length > 0 },
     { key: 'firstProbability', label: '一类稳定', color: '#b91c1c', available: payload.firstProbabilityMarkers && payload.firstProbabilityMarkers.length > 0 },
     { key: 'secondProbability', label: '二类稳定', color: '#dc2626', available: payload.secondProbabilityMarkers && payload.secondProbabilityMarkers.length > 0 },
     { key: 'marker', label: '标记', color: '#1e88e5', available: payload.customMarkers && payload.customMarkers.length > 0 },
   ].filter(item => item.available);
-  layerState = Object.fromEntries(controlSpecs.map(item => [item.key, item.defaultActive !== false]));
+  layerState = Object.fromEntries(controlSpecs.map(item => [item.key, true]));
   renderControls();
 }
 
