@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>模型信号看板</title>
+  <title>BSP序列扫描看板</title>
   <style>
     :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     * { box-sizing: border-box; }
@@ -12,6 +12,7 @@
     h1 { margin: 0; font-size: 18px; line-height: 1.2; }
     nav { display: flex; gap: 10px; font-size: 13px; }
     nav a { color: #2563eb; text-decoration: none; }
+    nav a[aria-current="page"] { color: #172033; font-weight: 700; }
     main { padding: 16px 18px 24px; }
     #message { display: none; margin-bottom: 12px; padding: 10px 12px; border: 1px solid #fed7aa; background: #fff7ed; color: #9a3412; border-radius: 6px; font-size: 13px; }
     #filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
@@ -21,72 +22,61 @@
     .summary-grid { display: grid; grid-template-columns: repeat(8, minmax(110px, 1fr)); gap: 8px; margin-bottom: 14px; }
     .metric { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; min-height: 66px; }
     .metric-label { color: #64748b; font-size: 12px; }
-    .metric-value { margin-top: 6px; font-size: 20px; font-weight: 700; }
+    .metric-value { margin-top: 6px; font-size: 18px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
     .panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 14px; overflow: hidden; }
     .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #e5e7eb; font-weight: 700; font-size: 14px; }
-    .stats-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 0; }
-    .stats-block { padding: 10px 12px; border-right: 1px solid #e5e7eb; min-height: 110px; }
+    .stats-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+    .stats-block { padding: 10px 12px; border-right: 1px solid #e5e7eb; min-height: 120px; }
     .stats-block:last-child { border-right: 0; }
-    .tiny-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .tiny-table td { padding: 4px 0; border-bottom: 1px solid #f1f5f9; }
-    #industry-stats td, #concept-stats td { padding-top: 3px; padding-bottom: 3px; line-height: 1.15; }
-    .stat-link { border: 0; background: transparent; color: #2563eb; font: inherit; padding: 0; cursor: pointer; }
+    .tiny-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+    .tiny-table td { padding: 5px 0; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }
+    .tiny-table td:first-child { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+    .tiny-table td:not(:first-child) { text-align: right; color: #475569; }
+    .stat-link { border: 0; background: transparent; color: #2563eb; font: inherit; padding: 0; cursor: pointer; text-align: left; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
     .stat-link:hover { text-decoration: underline; }
-    .bars { display: grid; gap: 4px; }
-    .bar-line { display: grid; grid-template-columns: 58px minmax(120px, 1fr) 42px 48px; gap: 8px; align-items: center; font-size: 12px; }
-    .bar-line { border-radius: 5px; cursor: pointer; padding: 2px 3px; }
-    .bar-line:hover { background: #eff6ff; }
-    .bar-line.is-selected { background: #dbeafe; outline: 1px solid #93c5fd; }
-    .bar-track { display: block; height: 12px; border-radius: 999px; background: #e5e7eb; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(15, 23, 42, .04); }
-    .bar-fill { display: block; height: 100%; min-width: 2px; border-radius: inherit; }
-    .bar-fill.low { background: #94a3b8; }
-    .bar-fill.mid { background: #2563eb; }
-    .bar-fill.high { background: #dc2626; }
-    .bar-pct { color: #64748b; text-align: right; font-variant-numeric: tabular-nums; }
-    table.signals { width: 100%; border-collapse: collapse; font-size: 13px; }
-    table.signals th, table.signals td { padding: 8px 10px; border-bottom: 1px solid #eef2f7; text-align: left; white-space: nowrap; }
-    table.signals th { background: #f8fafc; color: #475569; font-weight: 700; position: sticky; top: 0; }
-    .table-wrap { max-height: calc(100vh - 360px); overflow: auto; }
+    .table-wrap { max-height: calc(100vh - 260px); overflow: auto; }
+    table.results { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.results th, table.results td { padding: 8px 10px; border-bottom: 1px solid #eef2f7; text-align: left; white-space: nowrap; }
+    table.results th { background: #f8fafc; color: #475569; font-weight: 700; position: sticky; top: 0; }
+    .stock-name { display: flex; flex-direction: column; gap: 2px; line-height: 1.1; text-decoration: none; }
+    .stock-code { color: #64748b; font-size: 11px; }
+    .concept-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
     .side { display: inline-flex; align-items: center; justify-content: center; min-width: 38px; padding: 3px 7px; border-radius: 999px; color: #fff; font-size: 12px; font-weight: 700; }
     .side.buy { background: #b91c1c; }
     .side.sell { background: #15803d; }
-    .model-tag { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; padding: 3px 7px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 700; }
-    .prob { font-weight: 700; }
     .chart-link { color: #2563eb; text-decoration: none; font-weight: 600; }
-    .stock-name { display: flex; flex-direction: column; gap: 2px; line-height: 1.1; text-decoration: none; }
-    .stock-code { color: #64748b; font-size: 11px; }
+    .pct-up { color: #b91c1c; font-weight: 700; }
+    .pct-down { color: #15803d; font-weight: 700; }
     @media (max-width: 1100px) {
       .summary-grid { grid-template-columns: repeat(4, minmax(120px, 1fr)); }
       .stats-row { grid-template-columns: 1fr; }
       .stats-block { border-right: 0; border-bottom: 1px solid #e5e7eb; }
       .stats-block:last-child { border-bottom: 0; }
     }
+    @media (max-width: 720px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .table-wrap { max-height: none; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>模型信号看板</h1>
+    <h1>BSP序列扫描看板</h1>
     <nav>
       <a href="/chart">在线画图</a>
-      <a href="/sequence">BSP序列</a>
+      <a href="/signals">模型信号</a>
+      <a href="/sequence" aria-current="page">BSP序列</a>
     </nav>
   </header>
   <main>
     <div id="message"></div>
     <form id="filters">
       <label>扫描批次 <select name="run_id"></select></label>
-      <label>方向
-        <select name="side">
-          <option value="both">全部</option>
-          <option value="buy">买</option>
-          <option value="sell">卖</option>
-        </select>
-      </label>
       <label>行业 <select name="industry"><option value="all">全部</option></select></label>
       <label>概念 <select name="concept"><option value="all">全部</option></select></label>
       <label>开始 <input name="start_date" type="date" /></label>
       <label>结束 <input name="end_date" type="date" /></label>
-      <label>最小概率 <input name="min_prob" type="number" min="0" max="1" step="0.01" value="0.60" /></label>
       <label>数量 <input name="limit" type="number" min="1" max="1000" step="1" value="200" /></label>
       <button type="submit">刷新</button>
     </form>
@@ -95,52 +85,46 @@
       <div class="panel-title">统计分析</div>
       <div class="stats-row">
         <div class="stats-block">
-          <strong>分数分布</strong>
-          <div id="distribution" class="bars"></div>
+          <strong>行业统计</strong>
+          <table class="tiny-table">
+            <tbody id="industry-stats"></tbody>
+          </table>
         </div>
         <div class="stats-block">
-          <strong id="side-stats-title">方向对比</strong>
-          <table class="tiny-table"><tbody id="side-stats"></tbody></table>
-        </div>
-        <div class="stats-block">
-          <strong id="industry-stats-title">行业统计</strong>
-          <table class="tiny-table"><tbody id="industry-stats"></tbody></table>
-        </div>
-        <div class="stats-block">
-          <strong id="concept-stats-title">概念统计</strong>
-          <table class="tiny-table"><tbody id="concept-stats"></tbody></table>
+          <strong>概念统计</strong>
+          <table class="tiny-table">
+            <tbody id="concept-stats"></tbody>
+          </table>
         </div>
       </div>
     </section>
     <section class="panel">
       <div class="panel-title">
-        <span>高分信号</span>
-        <span id="signal-count"></span>
+        <span>命中股票</span>
+        <span id="result-count"></span>
       </div>
       <div class="table-wrap">
-        <table class="signals">
+        <table class="results">
           <thead>
             <tr>
               <th>名称</th>
               <th>行业</th>
-              <th>方向</th>
-              <th>模型</th>
-              <th>时间</th>
-              <th>概率</th>
+              <th>概念</th>
+              <th>地区</th>
+              <th>信号时间</th>
+              <th>信号</th>
               <th>价格</th>
-              <th>笔</th>
-              <th>背驰率</th>
-              <th>收盘位</th>
-              <th>子级别收盘位</th>
-              <th>MA10距离</th>
-              <th>图表</th>
+              <th>最新价</th>
+              <th>涨跌幅</th>
+              <th>周期</th>
+              <th>复盘</th>
             </tr>
           </thead>
-          <tbody id="signals-body"></tbody>
+          <tbody id="results-body"></tbody>
         </table>
       </div>
     </section>
   </main>
-  <script src="/static/signals.js?v=20260513-01"></script>
+  <script src="/static/sequence.js?v=20260517-04"></script>
 </body>
 </html>

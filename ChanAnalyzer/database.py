@@ -71,6 +71,10 @@ def init_db():
         cursor = conn.cursor()
         for sql in (
             "ALTER TABLE scan_runs ADD COLUMN ma_period INTEGER",
+            "ALTER TABLE scan_runs ADD COLUMN sequence_json TEXT",
+            "ALTER TABLE scan_runs ADD COLUMN max_gap_days INTEGER",
+            "ALTER TABLE scan_runs ADD COLUMN bi_mode VARCHAR(20)",
+            "ALTER TABLE scan_runs ADD COLUMN signal_level VARCHAR(20)",
             "ALTER TABLE scan_results ADD COLUMN signal_time VARCHAR(30)",
             "ALTER TABLE kline_data ADD COLUMN turnover_rate FLOAT",
         ):
@@ -231,6 +235,10 @@ class ScanRun(Base):
     sort_by_money_flow = Column(Integer, nullable=False, default=0)
     min_money_flow = Column(Float, nullable=False, default=0)
     ma_period = Column(Integer, nullable=True)
+    sequence_json = Column(Text, nullable=True)
+    max_gap_days = Column(Integer, nullable=True)
+    bi_mode = Column(String(20), nullable=True)
+    signal_level = Column(String(20), nullable=True)
 
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 

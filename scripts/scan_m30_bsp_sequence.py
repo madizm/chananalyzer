@@ -363,6 +363,10 @@ def save_results_to_database(
             sort_by_money_flow=0,
             min_money_flow=0,
             ma_period=None,
+            sequence_json=_to_json_text([label for _, _, label in sequence]),
+            max_gap_days=scan_params.get("max_gap_days"),
+            bi_mode=scan_params.get("bi_mode"),
+            signal_level=scan_params.get("level"),
         )
         db.add(scan_run)
         db.flush()
