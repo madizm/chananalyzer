@@ -277,7 +277,7 @@ function renderChart() {
     timezone: payload.timezone || 'Asia/Shanghai',
     theme: 'Light',
     disabled_features: ['use_localstorage_for_settings', 'header_symbol_search', 'header_compare', 'header_interval_dialog_button', 'timeframes_toolbar'],
-    enabled_features: ['study_templates'],
+    enabled_features: [],
     overrides: {
       'mainSeriesProperties.style': 1,
       'mainSeriesProperties.candleStyle.upColor': '#d32f2f',

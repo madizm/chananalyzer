@@ -883,7 +883,6 @@ class CTradingViewDriver:
         'timeframes_toolbar',
       ],
       enabled_features: [
-        'study_templates',
       ],
       overrides: {
         'mainSeriesProperties.style': 1,
