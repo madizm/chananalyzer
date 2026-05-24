@@ -209,6 +209,8 @@ def _distribution(signals: List[Dict[str, Any]], min_prob: float) -> List[Dict[s
     buckets = [
         {
             "bucket": f"{idx / 10:.1f}-{(idx + 1) / 10:.1f}",
+            "score_min": idx / 10,
+            "score_max": (idx + 1) / 10,
             "count": 0,
             "side_stats": [],
             "industry_stats": [],
@@ -351,6 +353,8 @@ def _filter_signals(
     *,
     side: str,
     min_prob: float,
+    score_min: Optional[float],
+    score_max: Optional[float],
     industry: str,
     concept: str,
     start_date: Optional[str],
@@ -360,6 +364,7 @@ def _filter_signals(
     end_dt = _parse_date_filter(end_date, is_end=True)
     filtered = []
     for signal in signals:
+        probability = float(signal.get("probability") or 0.0)
         if side != "both" and signal.get("signal_side") != side:
             continue
         if industry and industry != "all" and (signal.get("industry") or "未分类") != industry:
@@ -368,7 +373,16 @@ def _filter_signals(
             concepts = signal.get("concepts") or []
             if not any(concept in {item.get("code"), item.get("name")} for item in concepts):
                 continue
-        if float(signal.get("probability") or 0.0) < min_prob:
+        if score_min is not None or score_max is not None:
+            if score_min is not None and probability < score_min:
+                continue
+            if score_max is not None:
+                if score_max >= 1.0:
+                    if probability > 1.0:
+                        continue
+                elif probability >= score_max:
+                    continue
+        elif probability < min_prob:
             continue
         open_dt = _signal_time(signal)
         if start_dt is not None and (open_dt is None or open_dt < start_dt):
@@ -383,6 +397,8 @@ def build_signal_dashboard(
     *,
     run_id: Optional[int] = None,
     min_prob: float = 0.60,
+    score_min: Optional[float] = None,
+    score_max: Optional[float] = None,
     side: str = "both",
     industry: str = "all",
     concept: str = "all",
@@ -408,6 +424,8 @@ def build_signal_dashboard(
         all_signals,
         side=side,
         min_prob=min_prob,
+        score_min=score_min,
+        score_max=score_max,
         industry=industry,
         concept=concept,
         start_date=start_date,
@@ -432,6 +450,8 @@ def build_signal_dashboard(
         "filters": {
             "run_id": selected_run["id"],
             "min_prob": min_prob,
+            "score_min": score_min,
+            "score_max": score_max,
             "side": side,
             "industry": industry,
             "concept": concept,

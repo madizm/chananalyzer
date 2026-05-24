@@ -39,6 +39,21 @@ function metric(label, value) {
   return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`;
 }
 
+function parseOptionalNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function scoreRangeLabel(filters) {
+  const scoreMin = parseOptionalNumber(filters && filters.score_min);
+  const scoreMax = parseOptionalNumber(filters && filters.score_max);
+  if (scoreMin === null && scoreMax === null) return '全部';
+  const left = scoreMin === null ? '0.0%' : formatPct(scoreMin);
+  const right = scoreMax === null ? '100.0%' : formatPct(scoreMax);
+  return `${left}-${right}`;
+}
+
 function targetGroupLabel(value) {
   if (value === 'first') return '一类';
   if (value === 'second') return '二类';
@@ -111,6 +126,7 @@ function renderSummary(data) {
     metric('买 / 卖候选', `${formatNumber(summary.buy_candidate_count ?? run.buy_candidate_count)} / ${formatNumber(summary.sell_candidate_count ?? run.sell_candidate_count)}`),
     metric('目标', targetTypesLabel(summary.target_bsp_types ?? run.target_bsp_types)),
     metric('最小概率', formatPct(data.filters ? data.filters.min_prob : summary.min_prob)),
+    metric('分数区间', scoreRangeLabel(data.filters || {})),
     metric('运行ID', `#${run.id || '-'}`),
   ].join('');
 }
@@ -125,7 +141,7 @@ function renderDistribution(items) {
     const tone = bucketStart >= 0.7 ? 'high' : (bucketStart >= 0.4 ? 'mid' : 'low');
     const fillWidth = count > 0 ? Math.max(widthPct, 1) : 0;
     const selectedClass = index === selectedBucketIndex ? ' is-selected' : '';
-    return `<div class="bar-line${selectedClass}" data-bucket-index="${index}" title="查看 ${item.bucket} 分数段的方向对比">
+    return `<div class="bar-line${selectedClass}" data-bucket-index="${index}" data-score-min="${item.score_min}" data-score-max="${item.score_max}" title="筛选 ${item.bucket} 分数段的信号">
       <span>${item.bucket}</span>
       <span class="bar-track"><span class="bar-fill ${tone}" style="width:${fillWidth}%"></span></span>
       <span>${count}</span>
@@ -224,6 +240,8 @@ function paramsFromForm() {
   if (filtersElement.start_date.value) params.set('start_date', filtersElement.start_date.value);
   if (filtersElement.end_date.value) params.set('end_date', filtersElement.end_date.value);
   params.set('min_prob', filtersElement.min_prob.value || '0.6');
+  if (filtersElement.score_min.value) params.set('score_min', filtersElement.score_min.value);
+  if (filtersElement.score_max.value) params.set('score_max', filtersElement.score_max.value);
   params.set('limit', filtersElement.limit.value || '200');
   return params;
 }
@@ -235,12 +253,30 @@ function applyFiltersAndReload() {
   });
 }
 
+function syncSelectedBucketFromFilters(data) {
+  const distribution = data.stats && data.stats.probability_distribution ? data.stats.probability_distribution : [];
+  const scoreMin = parseOptionalNumber(data.filters && data.filters.score_min);
+  const scoreMax = parseOptionalNumber(data.filters && data.filters.score_max);
+  filtersElement.score_min.value = scoreMin === null ? '' : String(scoreMin);
+  filtersElement.score_max.value = scoreMax === null ? '' : String(scoreMax);
+  if (scoreMin === null && scoreMax === null) {
+    selectedBucketIndex = null;
+    return;
+  }
+  selectedBucketIndex = distribution.findIndex(item => {
+    const itemMin = parseOptionalNumber(item.score_min);
+    const itemMax = parseOptionalNumber(item.score_max);
+    return Math.abs((itemMin ?? -1) - (scoreMin ?? -1)) < 0.000001
+      && Math.abs((itemMax ?? -1) - (scoreMax ?? -1)) < 0.000001;
+  });
+  if (selectedBucketIndex < 0) selectedBucketIndex = null;
+}
+
 async function loadDashboard() {
   showMessage('', false);
   const params = paramsFromForm();
   const data = await fetchJson(`/api/signals/latest?${params.toString()}`);
   dashboardData = data;
-  selectedBucketIndex = null;
   if (!data.available) {
     showMessage(data.message || '暂无扫描结果', false);
     summaryElement.innerHTML = '';
@@ -251,6 +287,7 @@ async function loadDashboard() {
   runs = data.runs || runs;
   industries = data.industry_options || industries;
   concepts = data.concept_options || concepts;
+  syncSelectedBucketFromFilters(data);
   renderRunOptions(data.filters && data.filters.run_id);
   renderIndustryOptions(data.filters && data.filters.industry);
   renderConceptOptions(data.filters && data.filters.concept);
@@ -263,8 +300,16 @@ distributionElement.addEventListener('click', event => {
   const row = event.target.closest('[data-bucket-index]');
   if (!row || !dashboardData) return;
   const nextIndex = Number(row.getAttribute('data-bucket-index'));
-  selectedBucketIndex = selectedBucketIndex === nextIndex ? null : nextIndex;
-  renderStats(dashboardData);
+  if (selectedBucketIndex === nextIndex) {
+    filtersElement.score_min.value = '';
+    filtersElement.score_max.value = '';
+    selectedBucketIndex = null;
+  } else {
+    filtersElement.score_min.value = row.getAttribute('data-score-min') || '';
+    filtersElement.score_max.value = row.getAttribute('data-score-max') || '';
+    selectedBucketIndex = nextIndex;
+  }
+  void applyFiltersAndReload();
 });
 
 industryStatsElement.addEventListener('click', event => {

@@ -89,6 +89,8 @@ def signal_runs(limit: int = Query(20, ge=1, le=100)):
 def signal_latest(
     run_id: int | None = Query(None, description="扫描运行ID；不传则取最新一次"),
     min_prob: float = Query(0.60, ge=0.0, le=1.0),
+    score_min: float | None = Query(None, ge=0.0, le=1.0, description="概率区间下界，点击分布桶时使用"),
+    score_max: float | None = Query(None, ge=0.0, le=1.0, description="概率区间上界，点击分布桶时使用"),
     side: str = Query("both", pattern="^(buy|sell|both)$"),
     industry: str = Query("all", description="行业名称；all 表示全部"),
     concept: str = Query("all", description="概念板块代码或名称；all 表示全部"),
@@ -100,6 +102,8 @@ def signal_latest(
         return build_signal_dashboard(
             run_id=run_id,
             min_prob=min_prob,
+            score_min=score_min,
+            score_max=score_max,
             side=side,
             industry=industry,
             concept=concept,
