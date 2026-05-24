@@ -25,6 +25,7 @@ K线数据更新脚本
 
 import argparse
 import logging
+import multiprocessing as mp
 import os
 import sys
 from datetime import date, datetime, timedelta
@@ -100,6 +101,8 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+DEFAULT_TDX_WORKER_CHUNK_SIZE = int(os.environ.get("TDX_UPDATE_WORKER_CHUNK_SIZE", "25"))
 
 
 def _log(msg):
@@ -418,6 +421,22 @@ def update_stock(
         kl_type_str = get_kl_type_str(kl_type)
 
         try:
+            if only_missing and not refresh and kl_type != KL_TYPE.K_DAY:
+                logger.info(
+                    f"[{code} {kl_type_str}] --only-missing 仅补齐 DAY 历史缺口，跳过"
+                )
+                info = data_manager.get_cache_info(code, kl_type)
+                result["kl_types"][kl_type_str] = {
+                    "count": info.get("count", 0),
+                    "first_date": info.get("first_date"),
+                    "last_date": info.get("last_date"),
+                    "missing_days": 0,
+                    "missing_ranges": [],
+                    "fetched_rows": 0,
+                    "skipped": True,
+                }
+                continue
+
             # 清除缓存（如果需要）
             if refresh and verbose:
                 _log(f"[{code} {kl_type_str}] 清除旧缓存...")
@@ -511,6 +530,97 @@ def get_all_cached_stocks() -> List[str]:
     return get_cached_stock_codes()
 
 
+def _chunks(items: Sequence[str], chunk_size: int):
+    for start in range(0, len(items), chunk_size):
+        yield list(items[start : start + chunk_size])
+
+
+def _update_tdx_stock_chunk_worker(
+    codes: List[str],
+    kl_types: List[KL_TYPE],
+    refresh: bool,
+    only_missing: bool,
+    precomputed_missing: Dict[str, Dict[str, object]],
+    result_queue,
+):
+    """Run a bounded TDX update batch in a child process.
+
+    TPythClient.dll retains native memory across repeated get_market_data calls
+    in the same process. Keeping this worker small lets process exit reclaim it.
+    """
+    init_db()
+    data_manager = DataManager()
+    CTdxAPI.do_init()
+    success_count = 0
+    fail_count = 0
+    try:
+        for code in codes:
+            result = update_stock(
+                code,
+                kl_types,
+                data_manager,
+                "tdx",
+                refresh,
+                only_missing=only_missing,
+                precomputed_missing=precomputed_missing,
+            )
+            if result["success"]:
+                success_count += 1
+            else:
+                fail_count += 1
+    finally:
+        CTdxAPI.do_close()
+
+    result_queue.put((success_count, fail_count))
+
+
+def _update_all_tdx_only_missing_in_workers(
+    codes: List[str],
+    kl_types: List[KL_TYPE],
+    refresh: bool,
+    precomputed_missing: Dict[str, Dict[str, object]],
+    chunk_size: int = DEFAULT_TDX_WORKER_CHUNK_SIZE,
+) -> Tuple[int, int]:
+    if chunk_size <= 0:
+        chunk_size = DEFAULT_TDX_WORKER_CHUNK_SIZE
+
+    # Parent no longer needs a live TDX connection while child workers do fetches.
+    CTdxAPI.do_close()
+
+    success_count = 0
+    fail_count = 0
+    ctx = mp.get_context("spawn")
+    code_chunks = list(_chunks(codes, chunk_size))
+    iterator = code_chunks
+    if HAS_TQDM:
+        iterator = tqdm(code_chunks, desc="TDX补缺批次", unit="批")
+
+    for chunk in iterator:
+        queue = ctx.Queue()
+        chunk_missing = {
+            code: precomputed_missing[code]
+            for code in chunk
+            if code in precomputed_missing
+        }
+        process = ctx.Process(
+            target=_update_tdx_stock_chunk_worker,
+            args=(chunk, kl_types, refresh, True, chunk_missing, queue),
+        )
+        process.start()
+        process.join()
+
+        if process.exitcode != 0:
+            fail_count += len(chunk)
+            logger.error(f"TDX 子进程失败，exitcode={process.exitcode}, codes={chunk}")
+            continue
+
+        chunk_success, chunk_fail = queue.get()
+        success_count += chunk_success
+        fail_count += chunk_fail
+
+    return success_count, fail_count
+
+
 def update_all_stocks(
     kl_types: List[KL_TYPE],
     data_manager: DataManager,
@@ -539,6 +649,16 @@ def update_all_stocks(
 
     success_count = 0
     fail_count = 0
+
+    if data_source == "tdx" and only_missing and not refresh:
+        success_count, fail_count = _update_all_tdx_only_missing_in_workers(
+            codes=codes,
+            kl_types=kl_types,
+            refresh=refresh,
+            precomputed_missing=precomputed_missing,
+        )
+        logger.info(f"\n更新完成: 成功 {success_count}, 失败 {fail_count}")
+        return
 
     # 使用进度条
     iterator = codes
@@ -569,6 +689,8 @@ def update_all_stocks(
 
 
 def main():
+    mp.freeze_support()
+
     parser = argparse.ArgumentParser(description="K线数据更新脚本")
 
     parser.add_argument("--codes", nargs="+", help="指定股票代码，如: 000001 000002")

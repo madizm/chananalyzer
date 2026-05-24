@@ -286,16 +286,22 @@ class DataManager:
 
             logger.info(f"[{code} {kl_type_str}] 缓存更新: 新增 {len(new_rows)} 条")
 
-            # 返回合并后的数据
-            return (
-                db.query(KLineData)
-                .filter(
-                    KLineData.code == code,
-                    KLineData.kl_type == kl_type_str,
-                )
-                .order_by(KLineData.timestamp)
-                .all()
+            # 返回调用方请求范围内的合并结果，避免增量更新时把整只股票
+            # 的分钟级历史全部加载回 Python 进程。
+            query = db.query(KLineData).filter(
+                KLineData.code == code,
+                KLineData.kl_type == kl_type_str,
             )
+
+            begin_dt = self._parse_request_datetime(begin_date, is_end=False)
+            if begin_dt is not None:
+                query = query.filter(KLineData.timestamp >= begin_dt)
+
+            end_dt = self._parse_request_datetime(end_date, is_end=True)
+            if end_dt is not None:
+                query = query.filter(KLineData.timestamp <= end_dt)
+
+            return query.order_by(KLineData.timestamp).all()
 
     def _to_klu_list(self, kline_data_list: List[KLineData]) -> Iterable[CKLine_Unit]:
         """将 KLineData 列表转换为 CKLine_Unit 迭代器"""
