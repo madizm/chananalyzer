@@ -258,10 +258,21 @@ def collect_signals_by_replay(
     config = CChanConfig(
         {
             "trigger_step": True,
-            "bi_strict": bi_strict,
-            "print_warning": False,
-            "zs_algo": "auto",
+            "bi_strict": True,
+            "bi_algo": "fx",
+            "bi_fx_check": "half",
+            "skip_step": 0,
+            "divergence_rate": float("inf"),
+            "min_zs_cnt": 0,
+            "bs1_peak": False,
             "macd_algo": "peak",
+            "bs_type": "1,2,3a,1p,2s,3b",
+            "print_warning": True,
+            "zs_algo": "auto",
+            "one_bi_zs": False,
+            "left_seg_method": "all",
+            "bsp2_follow_1": False,
+            "bsp3_follow_1": False,
         }
     )
 

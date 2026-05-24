@@ -17,7 +17,9 @@ from .chart_params import parse_autype, parse_data_src, parse_lv
 
 
 DEFAULT_CONFIG = {
-    "bi_strict": True,
+    "bi_strict": False,
+    "bi_algo": "fx",
+    "bi_fx_check": "half",
     "trigger_step": False,
     "skip_step": 0,
     "divergence_rate": float("inf"),
@@ -26,7 +28,11 @@ DEFAULT_CONFIG = {
     "macd_algo": "peak",
     "bs_type": "1,2,3a,1p,2s,3b",
     "print_warning": True,
-    "zs_algo": "normal",
+    "zs_algo": "auto",
+    "one_bi_zs": False,
+    "left_seg_method": "all",
+    "bsp2_follow_1": False,
+    "bsp3_follow_1": False,
 }
 
 DEFAULT_PLOT_CONFIG = {
