@@ -32,6 +32,7 @@ from Debug.strategy_demo9 import (
     latest_previous_first_bsp,
     second_bi_feature,
 )
+from .bsp_signal_identity import build_signal_key
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -118,6 +119,7 @@ def _price_span(bars: List[Dict[str, Any]]) -> float:
 
 def _marker_payload(
     *,
+    code: str,
     klu,
     bi,
     probability: float,
@@ -133,7 +135,23 @@ def _marker_payload(
     prefix = "B" if is_buy else "S"
     suffix = "1 " if label_group == "first" else "2 "
     color = "#b91c1c" if is_buy else "#15803d"
+    signal_time = klu.time.to_str()
+    bi_begin_time = ctime_to_str(bi.get_begin_klu().time)
+    bi_end_time = ctime_to_str(bi.get_end_klu().time)
+    bi_direction = bi_direction_text(bi)
+    signal_key = build_signal_key(
+        code=code,
+        level="30M",
+        label_group=label_group,
+        signal_side=signal_side,
+        target_types=MODEL_GROUPS[label_group]["target_types"],
+        signal_time=signal_time,
+        bi_begin_time=bi_begin_time,
+        bi_end_time=bi_end_time,
+        bi_direction=bi_direction,
+    )
     return {
+        "signalKey": signal_key,
         "time": int(klu.time.ts),
         "price": price,
         "labelPrice": label_price,
@@ -145,10 +163,12 @@ def _marker_payload(
         "signalSide": signal_side,
         "labelGroup": label_group,
         "targetTypes": MODEL_GROUPS[label_group]["target_types"],
-        "signalTime": klu.time.to_str(),
-        "biBeginTime": ctime_to_str(bi.get_begin_klu().time),
-        "biEndTime": ctime_to_str(bi.get_end_klu().time),
-        "biDirection": bi_direction_text(bi),
+        "signalTime": signal_time,
+        "biBeginTime": bi_begin_time,
+        "biEndTime": bi_end_time,
+        "biDirection": bi_direction,
+        "status": "stable_predicted",
+        "stabilityProbability": probability,
         "labelMode": "stability",
         "labelSource": "trained_model",
         "scoringMode": "final_structure",
@@ -220,6 +240,7 @@ def _scan_first_group(code: str, begin: str, end: Optional[str], price_span: flo
             probability, model_dir = _predict_probability("first", signal_side, feature)
             loaded_model_dirs[signal_side] = model_dir
             markers.append(_marker_payload(
+                code=code,
                 klu=entry_klu,
                 bi=bi,
                 probability=probability,
@@ -284,6 +305,7 @@ def _scan_second_group(code: str, begin: str, end: Optional[str], price_span: fl
             probability, model_dir = _predict_probability("second", signal_side, feature)
             loaded_model_dirs[signal_side] = model_dir
             markers.append(_marker_payload(
+                code=code,
                 klu=entry_klu,
                 bi=bi,
                 probability=probability,

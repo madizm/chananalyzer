@@ -211,6 +211,8 @@ function drawPayload(chart) {
   if (layerState.bsp) drawMarkers(chart, payload.bspMarkers);
   if (layerState.firstProbability) drawMarkers(chart, payload.firstProbabilityMarkers || []);
   if (layerState.secondProbability) drawMarkers(chart, payload.secondProbabilityMarkers || []);
+  if (layerState.finalSignal) drawMarkers(chart, payload.finalMarkers || []);
+  if (layerState.disappearedSignal) drawMarkers(chart, payload.disappearedMarkers || []);
   if (layerState.marker) drawMarkers(chart, payload.customMarkers);
 }
 
@@ -248,6 +250,8 @@ function setupLayers() {
     { key: 'bsp', label: '买卖点', color: '#d32f2f', available: payload.bspMarkers && payload.bspMarkers.length > 0 },
     { key: 'firstProbability', label: '一类稳定', color: '#b91c1c', available: payload.firstProbabilityMarkers && payload.firstProbabilityMarkers.length > 0 },
     { key: 'secondProbability', label: '二类稳定', color: '#dc2626', available: payload.secondProbabilityMarkers && payload.secondProbabilityMarkers.length > 0 },
+    { key: 'finalSignal', label: 'final确认', color: '#2563eb', available: payload.finalMarkers && payload.finalMarkers.length > 0 },
+    { key: 'disappearedSignal', label: '消失告警', color: '#f97316', available: payload.disappearedMarkers && payload.disappearedMarkers.length > 0 },
     { key: 'marker', label: '标记', color: '#1e88e5', available: payload.customMarkers && payload.customMarkers.length > 0 },
   ].filter(item => item.available);
   layerState = Object.fromEntries(controlSpecs.map(item => [item.key, true]));
@@ -331,6 +335,10 @@ async function loadFromParams(params) {
   payload = await fetchPayload(params);
   if (!payload.bars || payload.bars.length === 0) throw new Error('没有返回 K 线数据');
   titleElement.textContent = `${payload.title}${payload.cache && payload.cache.hit ? '（缓存）' : ''}`;
+  const warningCount = payload.signalWarnings ? payload.signalWarnings.length : 0;
+  if (warningCount > 0) {
+    showMessage(`发现 ${warningCount} 个历史信号在当前 final 结构中消失，已在图表中以“消失告警”标记。`, false);
+  }
   renderLegend();
   setupLayers();
   renderChart();

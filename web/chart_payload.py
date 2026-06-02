@@ -12,7 +12,9 @@ from ChanConfig import CChanConfig
 from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
 from Plot.TradingViewDriver import build_tradingview_payload
 
+from .bsp_final_analysis import build_bsp_final_payload
 from .bsp_probability import build_bsp_probability_payload
+from .bsp_signal_observation import sync_chart_signal_observations
 from .chart_params import parse_autype, parse_data_src, parse_lv
 
 
@@ -205,7 +207,8 @@ def build_chart_request(
 
 
 def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any]:
-    if use_cache:
+    cache_enabled = use_cache and req.lv != KL_TYPE.K_30M
+    if cache_enabled:
         cached = payload_cache.get(req.cache_key)
         if cached is not None:
             return {**cached, "cache": {"hit": True}}
@@ -241,6 +244,10 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
     payload["probabilityMarkers"] = []
     payload["firstProbabilityMarkers"] = []
     payload["secondProbabilityMarkers"] = []
+    payload["stabilityMarkers"] = []
+    payload["finalMarkers"] = []
+    payload["disappearedMarkers"] = []
+    payload["signalWarnings"] = []
     try:
         probability_payload = build_bsp_probability_payload(
             code=req.code,
@@ -252,6 +259,7 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
         )
         payload["probabilityModel"] = {key: value for key, value in probability_payload.items() if key != "markers"}
         payload["probabilityMarkers"] = probability_payload.get("markers", [])
+        payload["stabilityMarkers"] = payload["probabilityMarkers"]
         payload["firstProbabilityMarkers"] = [
             marker for marker in payload["probabilityMarkers"]
             if marker.get("labelGroup") == "first"
@@ -277,8 +285,62 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
             "reason": str(exc),
             "markers": [],
         }
+
+    try:
+        final_payload = build_bsp_final_payload(
+            code=req.code,
+            lv=req.lv,
+            begin=req.begin,
+            end=req.end,
+            bars=payload.get("bars", []),
+            visible_range=payload.get("visibleRange"),
+        )
+        payload["finalAnalysis"] = {key: value for key, value in final_payload.items() if key != "markers"}
+        payload["finalMarkers"] = final_payload.get("markers", [])
+        if payload["finalMarkers"]:
+            payload["legend"].extend([
+                {"label": "final确认买点", "color": "#2563eb"},
+                {"label": "final确认卖点", "color": "#0f766e"},
+            ])
+    except Exception as exc:
+        payload["finalAnalysis"] = {
+            "enabled": req.lv == KL_TYPE.K_30M,
+            "status": "error",
+            "reason": str(exc),
+            "confirmedCount": 0,
+        }
+
+    try:
+        observation_payload = sync_chart_signal_observations(
+            code=req.code,
+            level="30M",
+            stability_markers=payload.get("stabilityMarkers", []),
+            final_markers=payload.get("finalMarkers", []),
+            visible_range=payload.get("visibleRange"),
+        ) if req.lv == KL_TYPE.K_30M else {
+            "status": "skipped",
+            "disappearedMarkers": [],
+            "signalWarnings": [],
+            "activeCount": 0,
+            "disappearedCount": 0,
+        }
+        payload["signalObservation"] = {
+            key: value for key, value in observation_payload.items()
+            if key not in {"disappearedMarkers", "signalWarnings"}
+        }
+        payload["disappearedMarkers"] = observation_payload.get("disappearedMarkers", [])
+        payload["signalWarnings"] = observation_payload.get("signalWarnings", [])
+        if payload["disappearedMarkers"]:
+            payload["legend"].append({"label": "消失告警", "color": "#f97316"})
+    except Exception as exc:
+        payload["signalObservation"] = {
+            "status": "error",
+            "reason": str(exc),
+            "activeCount": 0,
+            "disappearedCount": 0,
+        }
     payload["cache"] = {"hit": False}
 
-    if use_cache:
+    if cache_enabled:
         payload_cache.set(req.cache_key, payload)
     return payload
