@@ -181,7 +181,7 @@ class CCacheDBAPI(CCommonStockApi):
         ...     print(kline)
     """
 
-    _conn = None  # 类级别的数据库连接
+    _conn = None  # 保留向后兼容；读取时使用请求内独立连接
     _db_path = None
 
     def __init__(self, code, k_type=KL_TYPE.K_DAY, begin_date=None, end_date=None, autype=AUTYPE.QFQ):
@@ -211,37 +211,35 @@ class CCacheDBAPI(CCommonStockApi):
             CKLine_Unit: K线单元对象
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
 
-            # 转换K线类型
-            kl_type_str = self._convert_kl_type()
+                # 转换K线类型
+                kl_type_str = self._convert_kl_type()
 
-            # 格式化日期
-            if self.begin_date:
-                start_date = _format_query_date(self.begin_date, is_end=False)
-            else:
-                start_date = "2000/01/01"
+                # 格式化日期
+                if self.begin_date:
+                    start_date = _format_query_date(self.begin_date, is_end=False)
+                else:
+                    start_date = "2000/01/01"
 
-            if self.end_date:
-                end_date = _format_query_date(self.end_date, is_end=True)
-            else:
-                end_date = "2099/12/31"
+                if self.end_date:
+                    end_date = _format_query_date(self.end_date, is_end=True)
+                else:
+                    end_date = "2099/12/31"
 
-            # 查询数据库
-            query = """
-                SELECT code, kl_type, date, timestamp, open, high, low, close, volume, amount, turnover_rate, created_at, updated_at
-                FROM kline_data
-                WHERE code = ? AND kl_type = ? AND date >= ? AND date <= ?
-                ORDER BY date ASC
-            """
+                # 查询数据库
+                query = """
+                    SELECT code, kl_type, date, timestamp, open, high, low, close, volume, amount, turnover_rate, created_at, updated_at
+                    FROM kline_data
+                    WHERE code = ? AND kl_type = ? AND date >= ? AND date <= ?
+                    ORDER BY date ASC
+                """
 
-            cursor.execute(query, (self.code, kl_type_str, start_date, end_date))
+                cursor.execute(query, (self.code, kl_type_str, start_date, end_date))
 
-            for row in cursor.fetchall():
-                yield CKLine_Unit(_create_item_dict(row, self.autype))
-
-            conn.close()
+                for row in cursor.fetchall():
+                    yield CKLine_Unit(_create_item_dict(row, self.autype))
 
         except Exception as e:
             print(f"[CacheDB] 获取 {self.code} 数据失败: {e}")
@@ -255,17 +253,19 @@ class CCacheDBAPI(CCommonStockApi):
 
     @classmethod
     def do_init(cls):
-        """初始化数据库连接 (可选)"""
+        """初始化数据库状态。
+
+        CChan 会在每次加载前后调用数据源类级 do_init/do_close。Web 服务并发请求
+        会运行在不同线程中，因此这里不能创建类级 SQLite 连接；实际读取在
+        get_kl_data() 中使用请求内独立连接。
+        """
         cls._db_path = _get_db_path()
-        if os.path.exists(cls._db_path):
-            cls._conn = sqlite3.connect(cls._db_path)
+        cls._conn = None
 
     @classmethod
     def do_close(cls):
-        """关闭数据库连接"""
-        if cls._conn:
-            cls._conn.close()
-            cls._conn = None
+        """关闭数据库状态。"""
+        cls._conn = None
 
     def _convert_kl_type(self) -> str:
         """转换 K 线周期为数据库中的格式"""
