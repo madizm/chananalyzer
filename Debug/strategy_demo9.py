@@ -171,6 +171,33 @@ def previous_first_bsp_feature(entry_klu, current_bi, previous_first_bsp) -> Dic
     return feature
 
 
+def macd_distance_feature(klu) -> Dict[str, float]:
+    feature = {
+        "entry_macd_dif_dea_dist": 0.0,
+        "entry_macd_dif_dea_abs_dist": 0.0,
+        "entry_macd_dif_zero_dist": 0.0,
+        "entry_macd_dif_zero_abs_dist": 0.0,
+        "entry_macd_dea_zero_dist": 0.0,
+        "entry_macd_dea_zero_abs_dist": 0.0,
+    }
+    macd = getattr(klu, "macd", None)
+    if macd is None:
+        return feature
+
+    dif = float(macd.DIF)
+    dea = float(macd.DEA)
+    dif_dea_dist = dif - dea
+    feature.update({
+        "entry_macd_dif_dea_dist": dif_dea_dist,
+        "entry_macd_dif_dea_abs_dist": abs(dif_dea_dist),
+        "entry_macd_dif_zero_dist": dif,
+        "entry_macd_dif_zero_abs_dist": abs(dif),
+        "entry_macd_dea_zero_dist": dea,
+        "entry_macd_dea_zero_abs_dist": abs(dea),
+    })
+    return feature
+
+
 def second_bi_feature(
     klus: List,
     pos: int,
@@ -190,6 +217,7 @@ def second_bi_feature(
         parent_context,
         child_level_chan,
     )
+    feature.update(macd_distance_feature(klus[pos]))
     feature.update(previous_first_bsp_feature(klus[pos], bi, previous_first_bsp))
     return feature
 
