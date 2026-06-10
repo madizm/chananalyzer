@@ -295,8 +295,13 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
             bars=payload.get("bars", []),
             visible_range=payload.get("visibleRange"),
         )
-        payload["finalAnalysis"] = {key: value for key, value in final_payload.items() if key != "markers"}
+        payload["finalAnalysis"] = {
+            key: value for key, value in final_payload.items()
+            if key not in {"markers", "disappearedMarkers", "signalWarnings"}
+        }
         payload["finalMarkers"] = final_payload.get("markers", [])
+        payload["disappearedMarkers"] = final_payload.get("disappearedMarkers", [])
+        payload["signalWarnings"] = final_payload.get("signalWarnings", [])
         if payload["finalMarkers"]:
             payload["legend"].extend([
                 {"label": "final确认买点", "color": "#2563eb"},
@@ -328,8 +333,26 @@ def build_payload(req: ChartRequest, *, use_cache: bool = True) -> dict[str, Any
             key: value for key, value in observation_payload.items()
             if key not in {"disappearedMarkers", "signalWarnings"}
         }
-        payload["disappearedMarkers"] = observation_payload.get("disappearedMarkers", [])
-        payload["signalWarnings"] = observation_payload.get("signalWarnings", [])
+        observation_disappeared = observation_payload.get("disappearedMarkers", [])
+        observation_warnings = observation_payload.get("signalWarnings", [])
+        existing_disappeared_keys = {
+            marker.get("signalKey")
+            for marker in payload.get("disappearedMarkers", [])
+            if marker.get("signalKey")
+        }
+        payload["disappearedMarkers"].extend([
+            marker for marker in observation_disappeared
+            if marker.get("signalKey") not in existing_disappeared_keys
+        ])
+        existing_warning_keys = {
+            warning.get("signalKey")
+            for warning in payload.get("signalWarnings", [])
+            if warning.get("signalKey")
+        }
+        payload["signalWarnings"].extend([
+            warning for warning in observation_warnings
+            if warning.get("signalKey") not in existing_warning_keys
+        ])
         if payload["disappearedMarkers"]:
             payload["legend"].append({"label": "消失告警", "color": "#f97316"})
     except Exception as exc:

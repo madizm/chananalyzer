@@ -103,10 +103,15 @@ def _feature_row(feature: Dict[str, float], feature_meta: Dict[str, int]) -> Lis
 
 
 def _predict_probability(label_group: str, signal_side: str, feature: Dict[str, float]) -> tuple[float, str]:
+    probabilities, model_dir = _predict_probabilities(label_group, signal_side, [feature])
+    return probabilities[0], model_dir
+
+
+def _predict_probabilities(label_group: str, signal_side: str, features: List[Dict[str, float]]) -> tuple[List[float], str]:
     model, feature_meta, model_dir = _load_model_bundle(label_group, signal_side)
-    row = _feature_row(feature, feature_meta)
-    probability = float(model.predict_proba([row])[0][1])
-    return probability, str(model_dir.relative_to(ROOT_DIR))
+    rows = [_feature_row(feature, feature_meta) for feature in features]
+    probabilities = [float(item[1]) for item in model.predict_proba(rows)]
+    return probabilities, str(model_dir.relative_to(ROOT_DIR))
 
 
 def _price_span(bars: List[Dict[str, Any]]) -> float:
@@ -206,6 +211,7 @@ def _scan_first_group(code: str, begin: str, end: Optional[str], price_span: flo
     sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
 
     for signal_side, target_is_buy in (("buy", True), ("sell", False)):
+        entries = []
         bsps = target_bsp_by_key(
             code=code,
             signal_side=signal_side,
@@ -237,18 +243,21 @@ def _scan_first_group(code: str, begin: str, end: Optional[str], price_span: flo
                 _parent_context(parent_dates, parent_context_by_date, entry_klu),
                 child_level_chan,
             )
-            probability, model_dir = _predict_probability("first", signal_side, feature)
+            entries.append((entry_klu, bi, feature))
+        if entries:
+            probabilities, model_dir = _predict_probabilities("first", signal_side, [item[2] for item in entries])
             loaded_model_dirs[signal_side] = model_dir
-            markers.append(_marker_payload(
-                code=code,
-                klu=entry_klu,
-                bi=bi,
-                probability=probability,
-                signal_side=signal_side,
-                label_group="first",
-                price_span=price_span,
-                model_dir=model_dir,
-            ))
+            for (entry_klu, bi, _feature), probability in zip(entries, probabilities):
+                markers.append(_marker_payload(
+                    code=code,
+                    klu=entry_klu,
+                    bi=bi,
+                    probability=probability,
+                    signal_side=signal_side,
+                    label_group="first",
+                    price_span=price_span,
+                    model_dir=model_dir,
+                ))
     return markers, loaded_model_dirs
 
 
@@ -270,6 +279,7 @@ def _scan_second_group(code: str, begin: str, end: Optional[str], price_span: fl
     sorted_bsp_list = level_chan.bs_point_lst.getSortedBspList()
 
     for signal_side, target_is_buy in (("buy", True), ("sell", False)):
+        entries = []
         bsps = target_bsp_by_key(
             code=code,
             signal_side=signal_side,
@@ -302,18 +312,21 @@ def _scan_second_group(code: str, begin: str, end: Optional[str], price_span: fl
                 _parent_context(parent_dates, parent_context_by_date, entry_klu),
                 child_level_chan,
             )
-            probability, model_dir = _predict_probability("second", signal_side, feature)
+            entries.append((entry_klu, bi, feature))
+        if entries:
+            probabilities, model_dir = _predict_probabilities("second", signal_side, [item[2] for item in entries])
             loaded_model_dirs[signal_side] = model_dir
-            markers.append(_marker_payload(
-                code=code,
-                klu=entry_klu,
-                bi=bi,
-                probability=probability,
-                signal_side=signal_side,
-                label_group="second",
-                price_span=price_span,
-                model_dir=model_dir,
-            ))
+            for (entry_klu, bi, _feature), probability in zip(entries, probabilities):
+                markers.append(_marker_payload(
+                    code=code,
+                    klu=entry_klu,
+                    bi=bi,
+                    probability=probability,
+                    signal_side=signal_side,
+                    label_group="second",
+                    price_span=price_span,
+                    model_dir=model_dir,
+                ))
     return markers, loaded_model_dirs
 
 
